@@ -29,3 +29,16 @@ export async function POST(req, { params }) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
+
+export async function DELETE(req, { params }) {
+  const { id } = await params;
+  try {
+    const userId = requireUserId(req);
+    await lecturesQ.deleteBySubject(id, userId);
+    await subjectsQ.updateProgress(id, userId);
+    return NextResponse.json({ success: true });
+  } catch (e) {
+    if (e.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}

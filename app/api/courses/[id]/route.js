@@ -35,6 +35,20 @@ export async function PUT(req, { params }) {
   }
 }
 
+export async function PATCH(req, { params }) {
+  const { id } = await params;
+  try {
+    const userId = requireUserId(req);
+    const body = await req.json();
+    await subjectsQ.update(id, userId, body);
+    const subject = await subjectsQ.getById(id, userId);
+    return NextResponse.json({ subject });
+  } catch (e) {
+    if (e.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
+
 export async function DELETE(req, { params }) {
   const { id } = await params;
   try {

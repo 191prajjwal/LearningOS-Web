@@ -39,6 +39,8 @@ export const SCHEMA = `
     description TEXT,
     weightage REAL DEFAULT 0,
     syllabus_pdf TEXT DEFAULT '',
+    cover_image TEXT DEFAULT '',
+    default_lecture_thumbnail TEXT DEFAULT '',
     total_lectures INTEGER DEFAULT 0,
     completed_lectures INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),

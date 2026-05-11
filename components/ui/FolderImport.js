@@ -95,15 +95,22 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
     setStep("importing");
     setProgress({ done: 0, total: selectedEntries.length });
 
-    // If importing DPPs, clear old ones first as requested
-    if (importCategory === "dpp") {
-      try {
+    // Clear old items first as requested to prevent duplicates
+    try {
+      if (importCategory === "dpp") {
         await apiFetch(`/api/courses/${subjectId}/materials?category=dpp`, {
           method: "DELETE",
         });
-      } catch (err) {
-        console.error("Failed to clear old DPPs:", err);
+      } else {
+        if (!confirm("This will replace all existing lectures and materials for this course. Proceed?")) {
+          setStep("preview");
+          return;
+        }
+        await apiFetch(`/api/courses/${subjectId}/lectures`, { method: "DELETE" });
+        await apiFetch(`/api/courses/${subjectId}/materials?category=material`, { method: "DELETE" });
       }
+    } catch (err) {
+      console.error("Failed to clear old items:", err);
     }
     
     // Load blobs from directory handle with category
@@ -114,13 +121,34 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
       const entry = selectedEntries[i];
       try {
         if (entry.type === "video") {
+          let duration = 0;
+          try {
+            const handle = await dirHandle.getFileHandle(entry.file_name);
+            const file = await handle.getFile();
+            duration = await new Promise((resolve) => {
+              const video = document.createElement("video");
+              video.preload = "metadata";
+              video.onloadedmetadata = () => {
+                URL.revokeObjectURL(video.src);
+                resolve(Math.round(video.duration) || 0);
+              };
+              video.onerror = () => {
+                URL.revokeObjectURL(video.src);
+                resolve(0);
+              };
+              video.src = URL.createObjectURL(file);
+            });
+          } catch (e) {
+            console.error("Could not fetch duration for", entry.file_name, e);
+          }
+
           await apiFetch(`/api/courses/${subjectId}/lectures`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               title: entry.title,
               file_path: entry.file_name,
-              duration: 0,
+              duration,
               order_index: i,
             }),
           });

@@ -35,6 +35,19 @@ export async function initDb() {
     for (const sql of idxStatements) {
       await db.execute(sql);
     }
+    
+    // Migrations
+    try {
+      await db.execute("ALTER TABLE subjects ADD COLUMN cover_image TEXT DEFAULT ''");
+    } catch (e) {
+      // Ignore if already exists
+    }
+    try {
+      await db.execute("ALTER TABLE subjects ADD COLUMN default_lecture_thumbnail TEXT DEFAULT ''");
+    } catch (e) {
+      // Ignore if already exists
+    }
+
     _initialized = true;
   } catch (e) {
     console.error("initDb failed:", e.message);

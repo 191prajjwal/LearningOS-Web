@@ -48,12 +48,17 @@ export const settingsQ = {
 
 // ─── SUBJECTS ─────────────────────────────────────────────────────────────────
 export const subjectsQ = {
-  getAll: (userId) => dbQuery("SELECT * FROM subjects WHERE user_id = ? ORDER BY name", [userId]),
+  getAll: (userId) => dbQuery(`
+    SELECT s.*,
+           (SELECT SUM(duration) FROM lectures WHERE subject_id = s.id AND user_id = ?) as total_duration,
+           (SELECT title FROM lectures WHERE subject_id = s.id AND user_id = ? AND last_position > 0 AND is_completed = 0 ORDER BY updated_at DESC LIMIT 1) as recently_watched
+    FROM subjects s WHERE s.user_id = ? ORDER BY s.name
+  `, [userId, userId, userId]),
   getById: (id, userId) => dbGet("SELECT * FROM subjects WHERE id = ? AND user_id = ?", [id, userId]),
   create: async (userId, data) => {
     const r = await dbRun(
-      "INSERT INTO subjects (user_id, name, color, folder_path, description, weightage, syllabus_pdf) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [userId, data.name, data.color, data.folder_path, data.description, data.weightage || 0, data.syllabus_pdf || '']
+      "INSERT INTO subjects (user_id, name, color, folder_path, description, weightage, syllabus_pdf, cover_image, default_lecture_thumbnail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [userId, data.name, data.color, data.folder_path, data.description, data.weightage || 0, data.syllabus_pdf || '', data.cover_image || '', data.default_lecture_thumbnail || '']
     );
     return r.lastInsertRowid;
   },
@@ -96,6 +101,7 @@ export const lecturesQ = {
     return dbRun(`UPDATE lectures SET ${fields}, updated_at = datetime('now') WHERE id = ? AND user_id = ?`, [...Object.values(data), id, userId]);
   },
   delete: (id, userId) => dbRun("DELETE FROM lectures WHERE id = ? AND user_id = ?", [id, userId]),
+  deleteBySubject: (subjectId, userId) => dbRun("DELETE FROM lectures WHERE subject_id = ? AND user_id = ?", [subjectId, userId]),
   markComplete: (id, userId, val = 1) => dbRun("UPDATE lectures SET is_completed = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?", [val, id, userId]),
   updatePosition: (id, userId, pos) => dbRun("UPDATE lectures SET last_position = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?", [pos, id, userId]),
   incrementWatch: (id, userId, duration) => dbRun(
