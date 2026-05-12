@@ -13,34 +13,23 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { cn, formatDuration, pct, subjectColor } from "../../../lib/utils";
+import { cn, formatDuration, formatDurationText, pct, subjectColor, getLectureProgress, cleanLectureTitle, slugify } from "../../../lib/utils";
 import SyllabusPanel from "../../../components/study/SyllabusPanel";
 import NotesPanel from "../../../components/study/NotesPanel";
 import FolderImport from "../../../components/ui/FolderImport";
 
 const TABS = ["Lectures", "Materials", "Syllabus", "Notes"];
 
-// ─── helpers ────────────────────────────────────────────────────────────────
-function lectureStat(lec) {
-  if (lec.is_completed) return "completed";
-  if (lec.last_position > 0) return "inprogress";
-  return "notstarted";
-}
-
 // ─── Lecture thumbnail card ──────────────────────────────────────────────────
 function LectureCard({ lec, i, subjectId, color, subjectCoverImage, subjectLectureThumbnail, onToggleComplete }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [imgLoading, setImgLoading] = useState(false);
   const menuRef = useRef(null);
-  const stat = lectureStat(lec);
+  
+  const { status: stat, pct: watchedPct } = getLectureProgress(lec);
   
   const imgSrc = lec.thumbnail || subjectLectureThumbnail || subjectCoverImage;
   const hasBg = !!imgSrc;
-
-  // Duration total and watched pct
-  const watchedPct = lec.duration > 0 && lec.last_position > 0
-    ? Math.min(Math.round((lec.last_position / lec.duration) * 100), 99)
-    : 0;
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -51,20 +40,6 @@ function LectureCard({ lec, i, subjectId, color, subjectCoverImage, subjectLectu
     return () => document.removeEventListener("mousedown", handler);
   }, [menuOpen]);
 
-  const handleImageUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImgLoading(true);
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      await onImageChange(lec.id, ev.target.result);
-      setImgLoading(false);
-    };
-    reader.readAsDataURL(file);
-    e.target.value = "";
-    setMenuOpen(false);
-  };
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -72,14 +47,14 @@ function LectureCard({ lec, i, subjectId, color, subjectCoverImage, subjectLectu
       transition={{ delay: i * 0.03 }}
       className="group relative"
     >
-      <Link href={`/courses/${subjectId}/watch/${lec.id}`}>
+      <Link href={`/courses/${subjectId}/watch/${slugify(cleanLectureTitle(lec.title))}`}>
         <div className={cn(
           "rounded-xl border border-2 overflow-hidden cursor-pointer transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5",
           stat === "completed"
             ? "border-emerald-500/20 bg-emerald-500/4"
             : stat === "inprogress"
             ? "border-indigo-500/20 bg-indigo-500/3"
-            : "border-white/6 bg-surface"
+            : "border-default bg-surface"
         )}>
           {/* Thumbnail area */}
           <div className="relative h-28 overflow-hidden bg-black/30 rounded-xl">
@@ -108,11 +83,11 @@ function LectureCard({ lec, i, subjectId, color, subjectCoverImage, subjectLectu
               </div>
             </div>
 
-            {/* Number badge */}
+            {/* Status Badge */}
             <div className={cn(
-              "absolute top-2 left-2 w-6 h-6 rounded-lg flex items-center justify-center text-[11px] font-medium shadow-md bg-white text-black"
+              "absolute top-2 left-2 px-2 py-1  text-[10px] font-bold border backdrop-blur-md shadow-sm transition-all z-10 bg-white/90 text-black border-white/20 w-7 h-7 flex justify-center items-center rounded-xl"
             )}>
-              { i + 1}
+              {i + 1}
             </div>
 
 
@@ -137,7 +112,7 @@ function LectureCard({ lec, i, subjectId, color, subjectCoverImage, subjectLectu
                 </span>
               )}
               {stat === "completed" ? (
-                <span className="flex items-center gap-1 text-emerald-400 bg-white/10 backdrop-blur-md p-1 rounded-md">
+                <span className="flex items-center gap-1 bg-emerald-500/20 text-emerald-300 border-emerald-500/30 backdrop-blur-md p-1 rounded-md">
                   <CheckCircle2 className="w-3 h-3" />
                   Completed
                 </span>
@@ -164,7 +139,7 @@ function LectureCard({ lec, i, subjectId, color, subjectCoverImage, subjectLectu
 
           {/* Progress bar — full width, thin */}
           {(stat === "inprogress" || stat === "completed") && (
-            <div className="h-[3] bg-white/10 overflow-hidden relative w-full">
+            <div className="h-[3px] bg-muted overflow-hidden relative w-full">
               <div
                 className={cn(
                   "h-full transition-all rounded-r-full shadow-[0_0_8px_rgba(0,0,0,0.5)]",
@@ -179,11 +154,11 @@ function LectureCard({ lec, i, subjectId, color, subjectCoverImage, subjectLectu
           <div className="px-3 py-3  ">
             <p 
               className={cn(
-                "text-sm font-semibold   leading-snug line-clamp-1 truncate mb-1.5 text-white/95"
+                "text-sm font-semibold leading-snug line-clamp-1 truncate mb-1.5 text-primary"
               )}
-              title={lec.title.replace(/^[0-9]+[\s_\-]*/, '').replace(/_/g, ' ').replace(/\.[^/.]+$/, '')}
+              title={cleanLectureTitle(lec.title)}
             >
-              {lec.title.replace(/^[0-9]+[\s_\-]*/, '').replace(/_/g, ' ').replace(/\.[^/.]+$/, '')}
+              {cleanLectureTitle(lec.title)}
             </p>
 
            
@@ -244,13 +219,13 @@ function RecentlyWatched({ lectures, subject }) {
       </div>
       <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
         {recent.map(lec => {
-          const watchedPct = lec.duration > 0 ? Math.min(Math.round((lec.last_position / lec.duration) * 100), 99) : 0;
+          const { pct: watchedPct } = getLectureProgress(lec);
           const imgSrc = lec.thumbnail || subject.default_lecture_thumbnail || subject.cover_image;
-          const cleanTitle = lec.title.replace(/^[0-9]+[\s_\-]*/, '').replace(/_/g, ' ').replace(/\.[^/.]+$/, '');
+          const cleanTitle = cleanLectureTitle(lec.title);
           return (
-            <Link key={lec.id} href={`/courses/${subject.id}/watch/${lec.id}`}>
-              <div className="flex-shrink-0 w-52 rounded-xl border border-indigo-500/20 bg-indigo-500/5 overflow-hidden hover:border-indigo-500/40 transition-all group cursor-pointer">
-                <div className="relative h-20 bg-black/30">
+            <Link key={lec.id} href={`/courses/${subject.id}/watch/${slugify(cleanTitle)}`}>
+              <div className="flex-shrink-0 w-52 rounded-xl border border-default bg-surface overflow-hidden hover:border-indigo-500/40 transition-all group cursor-pointer shadow-sm">
+                <div className="relative h-20 bg-black/20">
                   {imgSrc
                     ? <img src={imgSrc} alt="" className="w-full h-full object-cover opacity-70 group-hover:opacity-90 transition-opacity" />
                     : <div className="w-full h-full flex items-center justify-center"><Film className="w-6 h-6 text-indigo-400/40" /></div>
@@ -259,12 +234,12 @@ function RecentlyWatched({ lectures, subject }) {
                     <PlayCircle className="w-8 h-8 text-white/80" />
                   </div>
                 </div>
-                <div className="h-0.5 bg-black/20">
-                  <div className="h-full bg-indigo-400" style={{ width: `${watchedPct}%` }} />
+                <div className="h-0.5 bg-muted">
+                  <div className="h-full bg-indigo-500" style={{ width: `${watchedPct}%` }} />
                 </div>
                 <div className="px-2.5 py-2">
                   <p className="text-[11px] font-medium text-primary line-clamp-1" title={cleanTitle}>{cleanTitle}</p>
-                  <p className="text-[10px] text-indigo-400 mt-0.5 flex items-center gap-1">
+                  <p className="text-[10px] text-indigo-500 dark:text-indigo-400 mt-0.5 flex items-center gap-1">
                     <History className="w-2.5 h-2.5" /> Resume {formatDuration(lec.last_position)}
                   </p>
                 </div>
@@ -430,19 +405,7 @@ export default function CoursePage() {
 
       {/* Header card */}
       <div className="rounded-2xl border overflow-hidden mb-6 relative group" style={{ borderColor: `${color}25` }}>
-        {/* Course Cover & Thumbnail Buttons */}
-        <div className="absolute top-4 right-4 z-10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2">
-           <label className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/50 backdrop-blur-md border border-white/10 text-xs font-medium text-white/90 hover:text-white hover:bg-black/70 cursor-pointer transition-all shadow-lg">
-             <Film className="w-3.5 h-3.5 text-indigo-400" />
-             {subject.default_lecture_thumbnail ? "Change lectures thumbnail" : "Set lectures thumbnail"}
-             <input type="file" accept="image/*" className="hidden" onChange={updateLecturesThumbnail} />
-           </label>
-           <label className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/50 backdrop-blur-md border border-white/10 text-xs font-medium text-white/90 hover:text-white hover:bg-black/70 cursor-pointer transition-all shadow-lg">
-             <ImagePlus className="w-3.5 h-3.5" />
-             {subject.cover_image ? "Change cover" : "Add cover"}
-             <input type="file" accept="image/*" className="hidden" onChange={updateCourseCover} />
-           </label>
-        </div>
+
 
         {/* Full bleed background */}
         {subject.cover_image ? (
@@ -461,31 +424,31 @@ export default function CoursePage() {
               <BookOpen className="w-7 h-7" style={{ color }} />
             </div>
             <div className="flex-1 min-w-0 pr-24">
-              <h1 className="font-display text-2xl font-bold text-white drop-shadow-md">{subject.name}</h1>
-              {subject.description && <p className="text-white/80 text-sm mt-1 drop-shadow-md">{subject.description}</p>}
+              <h1 className={cn("font-display text-2xl font-bold drop-shadow-md", subject.cover_image ? "text-white" : "text-primary")}>{subject.name}</h1>
+              {subject.description && <p className={cn("text-sm mt-1 drop-shadow-md", subject.cover_image ? "text-white/80" : "text-secondary")}>{subject.description}</p>}
 
               {/* Stats row */}
               <div className="flex flex-wrap items-center gap-4 mt-3">
                 <div className="flex items-center gap-1.5 text-sm drop-shadow-md">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span className="text-white font-semibold">{completedCount}</span>
-                  <span className="text-white/70">completed</span>
+                  <span className={cn("font-semibold", subject.cover_image ? "text-white" : "text-primary")}>{completedCount}</span>
+                  <span className={cn(subject.cover_image ? "text-white/70" : "text-muted")}>completed</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-sm drop-shadow-md">
                   <PlayCircle className="w-4 h-4 text-indigo-400" />
-                  <span className="text-white font-semibold">{inProgressCount}</span>
-                  <span className="text-white/70">in progress</span>
+                  <span className={cn("font-semibold", subject.cover_image ? "text-white" : "text-primary")}>{inProgressCount}</span>
+                  <span className={cn(subject.cover_image ? "text-white/70" : "text-muted")}>in progress</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-sm drop-shadow-md">
-                  <Film className="w-4 h-4 text-white/50" />
-                  <span className="text-white font-semibold">{notStartedCount}</span>
-                  <span className="text-white/70">not started</span>
+                  <Film className="w-4 h-4 opacity-50" style={{ color: subject.cover_image ? 'white' : 'currentColor' }} />
+                  <span className={cn("font-semibold", subject.cover_image ? "text-white" : "text-primary")}>{notStartedCount}</span>
+                  <span className={cn(subject.cover_image ? "text-white/70" : "text-muted")}>not started</span>
                 </div>
                 {totalDuration > 0 && (
                   <div className="flex items-center gap-1.5 text-sm drop-shadow-md">
-                    <Clock className="w-4 h-4 text-white/50" />
-                    <span className="text-white font-semibold">{formatDuration(totalDuration)}</span>
-                    <span className="text-white/70">total</span>
+                    <Clock className="w-4 h-4 opacity-50" style={{ color: subject.cover_image ? 'white' : 'currentColor' }} />
+                    <span className={cn("font-semibold", subject.cover_image ? "text-white" : "text-primary")}>{formatDurationText(totalDuration)}</span>
+                    <span className={cn(subject.cover_image ? "text-white/70" : "text-muted")}>total</span>
                   </div>
                 )}
                 <div className="flex items-center gap-1.5 text-sm font-mono ml-auto bg-indigo-600/10 backdrop-blur-md  px-4 py-2  rounded-md font-medium " style={{color}}>
@@ -659,11 +622,8 @@ export default function CoursePage() {
             /* List view (Grid of 3 items per row) */
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {lectures.map((lec, i) => {
-                const stat = lectureStat(lec);
-                const watchedPct = lec.duration > 0 && lec.last_position > 0
-                  ? Math.min(Math.round((lec.last_position / lec.duration) * 100), 99)
-                  : 0;
-                const cleanTitle = lec.title.replace(/^[0-9]+[\s_\-]*/, '').replace(/_/g, ' ').replace(/\.[^/.]+$/, '');
+                const { status: stat, pct: watchedPct } = getLectureProgress(lec);
+                const cleanTitle = cleanLectureTitle(lec.title);
                 return (
                   <motion.div
                     key={lec.id}
@@ -672,7 +632,7 @@ export default function CoursePage() {
                     transition={{ delay: i * 0.02 }}
                     className="group relative"
                   >
-                    <Link href={`/courses/${id}/watch/${lec.id}`}>
+                    <Link href={`/courses/${id}/watch/${slugify(cleanTitle)}`}>
                       <div className={cn(
                         "flex items-center gap-3 p-3 pr-10 rounded-xl border transition-all cursor-pointer h-full",
                         stat === "completed"
@@ -683,14 +643,18 @@ export default function CoursePage() {
                       )}>
                         {/* Thumbnail or number */}
                         <div className="w-14 h-9 rounded-lg overflow-hidden flex-shrink-0 bg-black/20 relative">
-                          {(lec.thumbnail || subject.default_lecture_thumbnail || subject.cover_image)
-                            ? <img src={lec.thumbnail || subject.default_lecture_thumbnail || subject.cover_image} alt="" className="w-full h-full object-cover" />
-                            : (
-                              <div className="w-full h-full flex items-center justify-center text-xs font-mono font-bold text-muted" style={{ background: `${color}15` }}>
+                          {(lec.thumbnail || subject.default_lecture_thumbnail || subject.cover_image) ? (
+                            <>
+                              <img src={lec.thumbnail || subject.default_lecture_thumbnail || subject.cover_image} alt="" className="w-full h-full object-cover opacity-80" />
+                              <div className="absolute inset-0 bg-black/30 flex items-center justify-center text-xs font-mono font-bold text-white drop-shadow-md">
                                 {stat === "completed" ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : i + 1}
                               </div>
-                            )
-                          }
+                            </>
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-xs font-mono font-bold text-muted" style={{ background: `${color}15` }}>
+                              {stat === "completed" ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : i + 1}
+                            </div>
+                          )}
                           {/* Thin progress bar on thumbnail */}
                           {stat === "inprogress" && (
                             <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/40">

@@ -76,13 +76,16 @@ export async function POST(req) {
       case "watch-session": {
         await watchQ.create(userId, body);
         if (body.lecture_id) {
-          await lecturesQ.incrementWatch(body.lecture_id, userId, body.duration);
-          if (body.position_pct >= 90) {
-            await lecturesQ.markComplete(body.lecture_id, userId);
+          const resolvedSubjectId = await subjectsQ.resolveId(body.subject_id, userId);
+          const resolvedLectureId = await lecturesQ.resolveId(body.lecture_id, resolvedSubjectId, userId);
+          
+          await lecturesQ.incrementWatch(resolvedLectureId, userId, body.duration);
+          if (body.position_pct >= 95) {
+            await lecturesQ.markComplete(resolvedLectureId, userId);
           } else {
-            await lecturesQ.updatePosition(body.lecture_id, userId, body.end_pos);
+            await lecturesQ.updatePosition(resolvedLectureId, userId, body.end_pos);
           }
-          if (body.subject_id) await subjectsQ.updateProgress(body.subject_id, userId);
+          if (resolvedSubjectId) await subjectsQ.updateProgress(resolvedSubjectId, userId);
         }
         const todayTotal = await watchQ.getTotalToday(userId);
         await streakQ.upsertToday(userId, todayTotal.total || 0);

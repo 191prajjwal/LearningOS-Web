@@ -7,7 +7,8 @@ export async function GET(req, { params }) {
   const { id } = await params;
   try {
     const userId = requireUserId(req);
-    const lectures = await lecturesQ.getBySubject(id, userId);
+    const resolvedId = await subjectsQ.resolveId(id, userId);
+    const lectures = await lecturesQ.getBySubject(resolvedId, userId);
     return NextResponse.json({ lectures });
   } catch (e) {
     if (e.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -19,9 +20,10 @@ export async function POST(req, { params }) {
   const { id } = await params;
   try {
     const userId = requireUserId(req);
+    const resolvedId = await subjectsQ.resolveId(id, userId);
     const body = await req.json();
-    const lectureId = await lecturesQ.create(userId, { ...body, subject_id: id });
-    await subjectsQ.updateProgress(id, userId);
+    const lectureId = await lecturesQ.create(userId, { ...body, subject_id: resolvedId });
+    await subjectsQ.updateProgress(resolvedId, userId);
     const lecture = await lecturesQ.getById(lectureId, userId);
     return NextResponse.json({ lecture }, { status: 201 });
   } catch (e) {
@@ -34,8 +36,9 @@ export async function DELETE(req, { params }) {
   const { id } = await params;
   try {
     const userId = requireUserId(req);
-    await lecturesQ.deleteBySubject(id, userId);
-    await subjectsQ.updateProgress(id, userId);
+    const resolvedId = await subjectsQ.resolveId(id, userId);
+    await lecturesQ.deleteBySubject(resolvedId, userId);
+    await subjectsQ.updateProgress(resolvedId, userId);
     return NextResponse.json({ success: true });
   } catch (e) {
     if (e.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

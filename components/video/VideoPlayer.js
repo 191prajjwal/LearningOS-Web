@@ -11,7 +11,7 @@ import {
   CheckCircle2, ArrowLeft, Loader2, Subtitles, ListVideo,
 } from "lucide-react";
 import Link from "next/link";
-import { cn, formatDuration, clamp } from "../../lib/utils";
+import { cn, formatDuration, clamp, getLectureProgress, cleanLectureTitle, slugify } from "../../lib/utils";
 import { PLAYBACK_SPEEDS, SKIP_SECONDS } from "../../lib/constants";
 import VideoNotes from "./VideoNotes";
 
@@ -58,7 +58,10 @@ export default function VideoPlayer({ subjectId, lectureId }) {
     try {
       const res = await apiFetch(`/api/courses/${subjectId}`);
       const cData = await res.json();
-      const lec = cData.lectures?.find(l => String(l.id) === String(lectureId));
+      const lec = cData.lectures?.find(l => 
+        String(l.id) === String(lectureId) || 
+        slugify(cleanLectureTitle(l.title)) === lectureId
+      );
       if (!lec) { setError("Lecture not found"); return; }
 
       setLecture(lec);
@@ -285,7 +288,9 @@ export default function VideoPlayer({ subjectId, lectureId }) {
             <ArrowLeft className="w-4 h-4" /> {subject?.name}
           </Link>
           <span className="text-muted">/</span>
-          <span className="text-sm text-primary truncate">{lecture?.title}</span>
+          <span className="text-sm text-primary truncate">
+            {cleanLectureTitle(lecture?.title)}
+          </span>
           <div className="ml-auto flex items-center gap-2">
            
             <button
@@ -510,7 +515,9 @@ export default function VideoPlayer({ subjectId, lectureId }) {
         {/* Lecture title bar */}
         <div className="flex items-center gap-4 px-4 py-3 bg-surface border-t border-default flex-shrink-0">
           <div className="flex-1 min-w-0">
-            <h2 className="font-display font-semibold text-primary text-sm truncate">{lecture?.title}</h2>
+            <h2 className="font-display font-semibold text-primary text-sm truncate">
+              {cleanLectureTitle(lecture?.title)}
+            </h2>
             <p className="text-xs text-muted">{currentIdx + 1} of {lectures.length} · {subject?.name}</p>
           </div>
         </div>
@@ -558,36 +565,46 @@ export default function VideoPlayer({ subjectId, lectureId }) {
             {/* Scrollable lecture list */}
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               {lectures.map((l, i) => {
-                const isCurrent = String(l.id) === String(lectureId);
+                const isCurrent = String(l.id) === String(lecture?.id);
                 const isNext = i === currentIdx + 1;
+                const { status, pct } = getLectureProgress(l);
+                
                 return (
                   <div key={l.id}>
                     {isNext && (
                       <p className="text-xs text-muted uppercase tracking-wider px-2 pt-2 pb-1">Up Next</p>
                     )}
-                    <Link href={`/courses/${subjectId}/watch/${l.id}`}>
+                    <Link href={`/courses/${subjectId}/watch/${slugify(cleanLectureTitle(l.title))}`}>
                       <div className={cn(
-                        "flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all cursor-pointer",
+                        "flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all cursor-pointer relative overflow-hidden",
                         isCurrent
                           ? "bg-indigo-600/20 border border-indigo-500/30"
                           : "hover:bg-elevated border border-transparent"
                       )}>
+                        {/* Progress Bar Background */}
+                        {(status === "inprogress" || status === "completed") && !isCurrent && (
+                           <div 
+                             className={cn("absolute bottom-0 left-0 h-[2px]", status === "completed" ? "bg-emerald-500" : "bg-indigo-500")} 
+                             style={{ width: `${pct}%` }} 
+                           />
+                        )}
+                        
                         {/* Number / check */}
                         <div className={cn(
-                          "w-7 h-7 rounded-lg flex items-center justify-center text-xs font-mono flex-shrink-0 font-bold",
+                          "w-7 h-7 rounded-lg flex items-center justify-center text-xs font-mono flex-shrink-0 font-bold z-10",
                           isCurrent ? "bg-indigo-500 text-white" :
-                          l.is_completed ? "bg-green-500/15 text-green-400" :
+                          status === "completed" ? "bg-green-500/15 text-green-400" :
                           "bg-elevated text-muted"
                         )}>
-                          {l.is_completed && !isCurrent ? "✓" : i + 1}
+                          {status === "completed" && !isCurrent ? "✓" : i + 1}
                         </div>
                         {/* Title */}
-                        <div className="flex-1 min-w-0">
+                        <div className="flex-1 min-w-0 z-10">
                           <p className={cn(
                             "text-xs font-medium leading-snug truncate",
-                            isCurrent ? "text-indigo-300" : l.is_completed ? "text-muted" : "text-secondary"
-                          )}>
-                            {l.title}
+                            isCurrent ? "text-indigo-300" : status === "completed" ? "text-muted" : "text-secondary"
+                          )} title={cleanLectureTitle(l.title)}>
+                            {cleanLectureTitle(l.title)}
                           </p>
                           {isCurrent && (
                             <p className="text-xs text-indigo-400 mt-0.5">Now playing</p>

@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus, BookOpen, Trash2, ChevronRight, Search, Film,
   CheckCircle2, Clock, PlayCircle, MoreVertical, ImagePlus,
-  X, Palette, AlignLeft, Loader2
+  X, Palette, AlignLeft, Loader2, Edit2
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -75,11 +75,13 @@ function ImagePickerButton({ value, onChange, label = "Cover image" }) {
 }
 
 // ─── Course card ─────────────────────────────────────────────────────────────
-function CourseCard({ sub, onDelete, onImageChange, i }) {
+function CourseCard({ sub, onDelete, onEdit, onImageChange, onThumbnailChange, i }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [imgLoading, setImgLoading] = useState(false);
+  const [thumbLoading, setThumbLoading] = useState(false);
   const menuRef = useRef(null);
   const imgInputRef = useRef(null);
+  const thumbInputRef = useRef(null);
 
   const progress = sub.total_lectures > 0 ? pct(sub.completed_lectures, sub.total_lectures) : 0;
   const color = sub.color || subjectColor(sub.name);
@@ -108,6 +110,20 @@ function CourseCard({ sub, onDelete, onImageChange, i }) {
     setMenuOpen(false);
   };
 
+  const handleThumbUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setThumbLoading(true);
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      await onThumbnailChange(sub.id, ev.target.result);
+      setThumbLoading(false);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+    setMenuOpen(false);
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 14 }}
@@ -115,11 +131,11 @@ function CourseCard({ sub, onDelete, onImageChange, i }) {
       transition={{ delay: i * 0.04 }}
       className="group relative h-auto"
     >
-      <Link href={`/courses/${sub.id}`}>
+      <Link href={`/courses/${sub.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}>
         <div className={cn(
           "relative w-full rounded-2xl border overflow-hidden cursor-pointer transition-all duration-300 flex flex-col",
           "hover:shadow-2xl hover:-translate-y-1 hover:border-indigo-500/30",
-          "border-white/10 bg-surface"
+          "border-default bg-surface"
         )}>
           {/* Top Image Layer */}
           <div className="relative w-full h-32 bg-black/20">
@@ -145,8 +161,8 @@ function CourseCard({ sub, onDelete, onImageChange, i }) {
               {/* Status pill */}
               <div className={cn(
                 "flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[10px] font-bold border backdrop-blur-md shadow-sm transition-colors",
-                progress === 100 ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" :
-                progress > 0 ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/30" :
+                progress === 100 ? "bg-emerald-500/15 text-emerald-600 border-emerald-500/25 dark:text-emerald-300 dark:bg-emerald-500/20" :
+                progress > 0 ? "bg-indigo-500/15 text-indigo-600 border-indigo-500/25 dark:text-indigo-300 dark:bg-indigo-500/20" :
                 "bg-black/40 text-white/70 border-white/10"
               )}>
                 {progress === 100
@@ -175,20 +191,12 @@ function CourseCard({ sub, onDelete, onImageChange, i }) {
                       transition={{ duration: 0.12 }}
                       className="absolute right-0 top-10 z-30 bg-elevated border border-default rounded-xl shadow-2xl min-w-[160px] overflow-hidden py-1"
                     >
-                      <label className="flex items-center gap-2.5 px-3 py-2 text-sm text-secondary hover:bg-overlay hover:text-primary cursor-pointer transition-colors">
-                        <ImagePlus className="w-3.5 h-3.5 text-indigo-400" />
-                        {sub.cover_image ? "Change image" : "Upload image"}
-                        <input ref={imgInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
-                      </label>
-                      {sub.cover_image && (
-                        <button
-                          onClick={async (e) => { e.preventDefault(); await onImageChange(sub.id, null); setMenuOpen(false); }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-secondary hover:bg-overlay hover:text-primary transition-colors"
-                        >
-                          <X className="w-3.5 h-3.5 text-muted" /> Remove image
-                        </button>
-                      )}
-                      <div className="h-px bg-default mx-3 my-1" />
+                      <button
+                        onClick={(e) => { e.preventDefault(); onEdit(sub); setMenuOpen(false); }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-secondary hover:bg-overlay hover:text-primary transition-colors"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" /> Edit course
+                      </button>
                       <button
                         onClick={(e) => { e.preventDefault(); onDelete(sub.id); setMenuOpen(false); }}
                         className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
@@ -221,7 +229,7 @@ function CourseCard({ sub, onDelete, onImageChange, i }) {
             </div>
 
             {/* Progress bar */}
-            <div className="w-full h-1.5 rounded-full bg-white/10 mb-3 overflow-hidden shadow-inner">
+            <div className="w-full h-1.5 rounded-full bg-muted mb-3 overflow-hidden shadow-inner">
               <motion.div
                 initial={{ width: 0 }}
                 animate={{ width: `${progress}%` }}
@@ -252,10 +260,10 @@ function CourseCard({ sub, onDelete, onImageChange, i }) {
             </div>
           </div>
 
-          {/* Loading spinner overlay */}
-          {imgLoading && (
-            <div className="absolute inset-0 z-20 bg-black/60 backdrop-blur-sm flex items-center justify-center">
-              <Loader2 className="w-8 h-8 text-white animate-spin" />
+          {/* Image loading */}
+          {(imgLoading || thumbLoading) && (
+            <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-20">
+              <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
             </div>
           )}
         </div>
@@ -271,6 +279,7 @@ export default function CoursesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all"); // all | inprogress | completed | notstarted
+  const [editingSubject, setEditingSubject] = useState(null);
   const [newSubject, setNewSubject] = useState({
     name: "", description: "", color: CHART_COLORS[0], cover_image: null
   });
@@ -306,6 +315,25 @@ export default function CoursesPage() {
     loadSubjects();
   };
 
+  const saveEditedSubject = async () => {
+    if (!editingSubject.name.trim()) return;
+    try {
+      await apiFetch(`/api/courses/${editingSubject.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editingSubject.name,
+          description: editingSubject.description,
+          color: editingSubject.color,
+          cover_image: editingSubject.cover_image,
+        }),
+      });
+      toast.success("Course updated!");
+      setEditingSubject(null);
+      loadSubjects();
+    } catch { toast.error("Failed to update course"); }
+  };
+
   const updateCoverImage = async (id, imageData) => {
     try {
       await apiFetch(`/api/courses/${id}`, {
@@ -314,8 +342,20 @@ export default function CoursesPage() {
         body: JSON.stringify({ cover_image: imageData }),
       });
       setSubjects(prev => prev.map(s => s.id === id ? { ...s, cover_image: imageData } : s));
-      toast.success(imageData ? "Cover updated" : "Cover removed");
-    } catch { toast.error("Failed to update cover"); }
+      toast.success(imageData ? "Course cover updated" : "Course cover removed");
+    } catch { toast.error("Failed to update course cover"); }
+  };
+
+  const updateThumbnailImage = async (id, imageData) => {
+    try {
+      await apiFetch(`/api/courses/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ default_lecture_thumbnail: imageData }),
+      });
+      setSubjects(prev => prev.map(s => s.id === id ? { ...s, default_lecture_thumbnail: imageData } : s));
+      toast.success(imageData ? "Lectures thumbnail updated" : "Lectures thumbnail removed");
+    } catch { toast.error("Failed to update lectures thumbnail"); }
   };
 
   // Filtering
@@ -495,6 +535,82 @@ export default function CoursesPage() {
         )}
       </AnimatePresence>
 
+      {/* Edit course modal */}
+      <AnimatePresence>
+        {editingSubject && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="card-surface p-6 w-full max-w-md shadow-2xl relative"
+            >
+              <button
+                onClick={() => setEditingSubject(null)}
+                className="absolute top-4 right-4 text-muted hover:text-primary transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <h3 className="font-display font-semibold text-primary mb-4 text-lg">Edit Course</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs text-muted mb-1.5">Subject Name *</label>
+                  <input
+                    autoFocus
+                    value={editingSubject.name}
+                    onChange={e => setEditingSubject(v => ({ ...v, name: e.target.value }))}
+                    className="input-base"
+                    onKeyDown={e => e.key === "Enter" && saveEditedSubject()}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1.5">Description</label>
+                  <input
+                    value={editingSubject.description || ""}
+                    onChange={e => setEditingSubject(v => ({ ...v, description: e.target.value }))}
+                    className="input-base"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1.5">Accent Color</label>
+                  <div className="flex gap-2 flex-wrap">
+                    {CHART_COLORS.map(c => (
+                      <button
+                        key={c}
+                        onClick={() => setEditingSubject(v => ({ ...v, color: c }))}
+                        className={cn(
+                          "w-7 h-7 rounded-full border-2 transition-transform",
+                          editingSubject.color === c ? "border-white scale-125" : "border-transparent"
+                        )}
+                        style={{ background: c }}
+                      />
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1.5">Course Cover Image (Optional)</label>
+                  <ImagePickerButton value={editingSubject.cover_image} onChange={v => setEditingSubject(prev => ({ ...prev, cover_image: v }))} label="" />
+                </div>
+                <div className="flex gap-3 mt-6 pt-4 border-t border-default">
+                  <button
+                    onClick={saveEditedSubject}
+                    className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
+                  >
+                    Save Changes
+                  </button>
+                  <button
+                    onClick={() => setEditingSubject(null)}
+                    className="flex-1 py-2 rounded-xl border border-default text-secondary hover:text-primary text-sm transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Grid */}
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -525,7 +641,9 @@ export default function CoursesPage() {
               sub={sub}
               i={i}
               onDelete={deleteSubject}
+              onEdit={setEditingSubject}
               onImageChange={updateCoverImage}
+              onThumbnailChange={updateThumbnailImage}
             />
           ))}
         </div>

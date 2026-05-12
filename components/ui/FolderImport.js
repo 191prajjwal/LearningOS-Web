@@ -39,24 +39,36 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
     try {
       const handle = await window.showDirectoryPicker({ mode: "read" });
       const files = [];
-      for await (const entry of handle.values()) {
-        if (entry.kind === "file") {
-          const isVid = isVideo(entry.name);
-          const isMat = isMaterial(entry.name);
-          
-          if (importCategory === "dpp" && !isMat) continue;
-          
-          if (isVid || isMat) {
-            files.push({
-              id: entry.name,
-              title: entry.name.replace(/\.[^.]+$/, ""),
-              file_name: entry.name,
-              type: isVid ? "video" : "material",
-              selected: true,
-            });
+      
+      async function collectFiles(dirHandle, path = "", isRoot = true) {
+        for await (const entry of dirHandle.values()) {
+          if (entry.kind === "file") {
+            const isVid = isVideo(entry.name);
+            const isMat = isMaterial(entry.name);
+            
+            if (importCategory === "dpp" && !isMat) continue;
+            
+            // Allow videos only in root (as requested), materials anywhere
+            if ((isVid && isRoot) || isMat) {
+              const fullPath = path + entry.name;
+              files.push({
+                id: fullPath,
+                title: entry.name.replace(/\.[^.]+$/, ""),
+                file_name: fullPath,
+                original_name: entry.name,
+                type: isVid ? "video" : "material",
+                selected: true,
+                handle: dirHandle
+              });
+            }
+          } else if (entry.kind === "directory") {
+            await collectFiles(entry, path + entry.name + "/", false);
           }
         }
       }
+      
+      await collectFiles(handle);
+      
       if (files.length === 0) {
         toast.error("No supported files found in this folder");
         return;
@@ -122,24 +134,49 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
       try {
         if (entry.type === "video") {
           let duration = 0;
+          let thumbnail = null;
           try {
-            const handle = await dirHandle.getFileHandle(entry.file_name);
+            const handle = await entry.handle.getFileHandle(entry.original_name);
             const file = await handle.getFile();
-            duration = await new Promise((resolve) => {
+            const metadata = await new Promise((resolve) => {
               const video = document.createElement("video");
-              video.preload = "metadata";
-              video.onloadedmetadata = () => {
-                URL.revokeObjectURL(video.src);
-                resolve(Math.round(video.duration) || 0);
+              video.preload = "auto";
+              video.muted = true;
+              video.playsInline = true;
+              
+              const cleanup = () => URL.revokeObjectURL(video.src);
+
+              video.onloadeddata = () => {
+                video.currentTime = Math.min(1.5, video.duration / 3 || 0); // Seek to 1.5 seconds to get a good frame
               };
+
+              video.onseeked = () => {
+                try {
+                  const canvas = document.createElement("canvas");
+                  canvas.width = 400; // Good quality thumbnail
+                  canvas.height = (video.videoHeight / video.videoWidth) * 400 || 225;
+                  const ctx = canvas.getContext("2d");
+                  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                  const dataUrl = canvas.toDataURL("image/jpeg", 0.65);
+                  resolve({ d: Math.round(video.duration) || 0, t: dataUrl });
+                } catch (e) {
+                  resolve({ d: Math.round(video.duration) || 0, t: null });
+                } finally {
+                  cleanup();
+                }
+              };
+
               video.onerror = () => {
-                URL.revokeObjectURL(video.src);
-                resolve(0);
+                cleanup();
+                resolve({ d: 0, t: null });
               };
+              
               video.src = URL.createObjectURL(file);
             });
+            duration = metadata.d;
+            thumbnail = metadata.t;
           } catch (e) {
-            console.error("Could not fetch duration for", entry.file_name, e);
+            console.error("Could not fetch duration/thumbnail for", entry.file_name, e);
           }
 
           await apiFetch(`/api/courses/${subjectId}/lectures`, {
@@ -149,6 +186,7 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
               title: entry.title,
               file_path: entry.file_name,
               duration,
+              thumbnail,
               order_index: i,
             }),
           });
@@ -277,7 +315,7 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
                     ) : (
                       <span className="text-sm text-primary truncate block">{entry.title}</span>
                     )}
-                    <p className="text-xs text-muted truncate">{entry.file_name}</p>
+                    <p className="text-xs text-muted truncate mt-0.5">{entry.file_name}</p>
                   </div>
                   {editingId !== entry.id && (
                     <button onClick={() => { setEditingId(entry.id); setEditValue(entry.title); }} className="text-muted hover:text-primary transition-colors flex-shrink-0">

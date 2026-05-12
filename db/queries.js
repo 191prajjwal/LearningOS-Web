@@ -1,5 +1,6 @@
 import { dbGet, dbQuery, dbRun, hashPin } from "./client.js";
 import { format } from "date-fns";
+import { slugify, cleanLectureTitle } from "../lib/utils.js";
 
 const today = () => format(new Date(), "yyyy-MM-dd");
 
@@ -55,6 +56,13 @@ export const subjectsQ = {
     FROM subjects s WHERE s.user_id = ? ORDER BY s.name
   `, [userId, userId, userId]),
   getById: (id, userId) => dbGet("SELECT * FROM subjects WHERE id = ? AND user_id = ?", [id, userId]),
+  resolveId: async (idOrSlug, userId) => {
+    // If it's a number, just return it
+    if (!isNaN(idOrSlug)) return idOrSlug;
+    // Otherwise, try to find by name (slugified)
+    const row = await dbGet("SELECT id FROM subjects WHERE REPLACE(LOWER(name), ' ', '-') = ? AND user_id = ?", [String(idOrSlug).toLowerCase(), userId]);
+    return row ? row.id : idOrSlug;
+  },
   create: async (userId, data) => {
     const r = await dbRun(
       "INSERT INTO subjects (user_id, name, color, folder_path, description, weightage, syllabus_pdf, cover_image, default_lecture_thumbnail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -89,6 +97,16 @@ export const lecturesQ = {
     "SELECT l.*, s.name as subject_name FROM lectures l LEFT JOIN subjects s ON l.subject_id = s.id WHERE l.id = ? AND l.user_id = ?",
     [id, userId]
   ),
+  resolveId: async (idOrSlug, subjectId, userId) => {
+    if (!isNaN(idOrSlug)) {
+      const exists = await dbGet("SELECT id FROM lectures WHERE id = ? AND subject_id = ? AND user_id = ?", [idOrSlug, subjectId, userId]);
+      if (exists) return exists.id;
+    }
+    const all = await dbQuery("SELECT id, title FROM lectures WHERE subject_id = ? AND user_id = ?", [subjectId, userId]);
+    const match = all.find(l => slugify(cleanLectureTitle(l.title)) === idOrSlug);
+    if (match) return match.id;
+    throw new Error("Lecture not found");
+  },
   create: async (userId, data) => {
     const r = await dbRun(
       "INSERT INTO lectures (user_id, subject_id, title, file_path, duration, order_index, thumbnail) VALUES (?, ?, ?, ?, ?, ?, ?)",

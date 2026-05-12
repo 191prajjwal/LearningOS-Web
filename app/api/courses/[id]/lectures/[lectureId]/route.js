@@ -9,14 +9,17 @@ export async function PATCH(req, { params }) {
     const userId = requireUserId(req);
     const body = await req.json();
     
-    await lecturesQ.update(lectureId, userId, body);
+    const resolvedSubjectId = await subjectsQ.resolveId(id, userId);
+    const resolvedLectureId = await lecturesQ.resolveId(lectureId, resolvedSubjectId, userId);
+    
+    await lecturesQ.update(resolvedLectureId, userId, body);
     
     // If completed status changed, update subject progress
     if (body.is_completed !== undefined) {
-      await subjectsQ.updateProgress(id, userId);
+      await subjectsQ.updateProgress(resolvedSubjectId, userId);
     }
     
-    const lecture = await lecturesQ.getById(lectureId, userId);
+    const lecture = await lecturesQ.getById(resolvedLectureId, userId);
     return NextResponse.json({ lecture });
   } catch (e) {
     if (e.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
