@@ -1,14 +1,14 @@
 "use client";
 import { apiFetch } from "../../../lib/api";
 import { folderStore } from "../../../lib/folder-store";
-import { useState, useEffect, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Play, Plus, CheckCircle2, Clock, Film, BookOpen,
-  ArrowLeft, FolderOpen, FileText, ExternalLink,
-  MoreVertical, ImagePlus, X, Loader2, History,
-  PlayCircle, Lock, ChevronRight, Trash2,
+  Play, CheckCircle2, Clock, Film, BookOpen,
+  ArrowLeft, FileText, ExternalLink, Folder,
+  MoreVertical, X, Loader2, History,
+  PlayCircle, Grid2X2, List, RefreshCw, UserRound,
   Image as ImageIcon, File as FileIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -16,19 +16,121 @@ import { toast } from "sonner";
 import { cn, formatDuration, formatDurationText, pct, subjectColor, getLectureProgress, cleanLectureTitle, slugify } from "../../../lib/utils";
 import SyllabusPanel from "../../../components/study/SyllabusPanel";
 import NotesPanel from "../../../components/study/NotesPanel";
-import FolderImport from "../../../components/ui/FolderImport";
+import { getVideoMetadata, getVideoMetadataFromUrl } from "../../../lib/video-metadata";
 
 const TABS = ["Lectures", "Materials", "Syllabus", "Notes"];
+const VIDEO_EXTS = ["mp4", "mkv", "webm", "mov", "avi", "m4v", "flv", "wmv", "ogg", "ogv", "ts", "mts", "m2ts", "3gp"];
+const MATERIAL_EXTS = ["pdf", "doc", "docx", "txt", "jpg", "jpeg", "png", "webp"];
+const IMAGE_EXTS = ["jpg", "jpeg", "png", "webp"];
+const DOC_EXTS = ["doc", "docx", "txt"];
+
+function isSupportedCourseFile(name) {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  return VIDEO_EXTS.includes(ext) || MATERIAL_EXTS.includes(ext);
+}
+
+function isVideoFile(name) {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  return VIDEO_EXTS.includes(ext);
+}
+
+function cleanFileTitle(name) {
+  return name.replace(/\.[^.]+$/, "").replace(/^[0-9]+[\s_.-]*/, "").replace(/_/g, " ").trim();
+}
+
+async function collectBrowserFolderEntries(dirHandle, path = "", found = []) {
+  for await (const entry of dirHandle.values()) {
+    if (entry.kind === "directory") {
+      await collectBrowserFolderEntries(entry, `${path}${entry.name}/`, found);
+    } else if (entry.kind === "file" && isSupportedCourseFile(entry.name)) {
+      const fileName = `${path}${entry.name}`;
+      found.push({
+        id: fileName,
+        title: cleanFileTitle(entry.name) || entry.name,
+        file_path: fileName,
+        fileHandle: entry,
+        type: isVideoFile(entry.name) ? "video" : "material",
+      });
+    }
+  }
+  return found.sort((a, b) => a.file_path.localeCompare(b.file_path, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function titleCaseSegment(value) {
+  const upperWords = new Set(["cpu", "dpp", "os", "pdf", "dbms", "sql"]);
+  return value
+    .split(" ")
+    .filter(Boolean)
+    .map(word => {
+      const lower = word.toLowerCase();
+      if (upperWords.has(lower)) return lower.toUpperCase();
+      if (/^[ivx]+$/i.test(word)) return word.toUpperCase();
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(" ");
+}
+
+function cleanMaterialSegment(segment) {
+  return titleCaseSegment(
+    segment
+      .replace(/\.[^.]+$/, "")
+      .replace(/[a-f0-9]{24}/gi, "")
+      .replace(/[a-f0-9]{12,}$/gi, "")
+      .replace(/^[0-9]+[\s_.-]+/, "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
+
+function formatMaterialPath(filePath = "") {
+  const normalized = String(filePath).replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  const fileName = parts.pop() || normalized;
+  const ext = fileName.split(".").pop()?.toLowerCase() || "";
+  const folders = parts.map(cleanMaterialSegment).filter(Boolean);
+  let name = cleanMaterialSegment(fileName) || fileName.replace(/\.[^.]+$/, "");
+  for (const folder of [...folders].reverse()) {
+    const pattern = new RegExp(`^${folder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+`, "i");
+    name = name.replace(pattern, "").trim();
+  }
+  const display = [...folders, name].join(" / ");
+  return {
+    display,
+    folder: folders.join(" / "),
+    name,
+    ext,
+  };
+}
+
+function materialIconForExt(ext) {
+  const isImg = IMAGE_EXTS.includes(ext);
+  const isDoc = DOC_EXTS.includes(ext);
+  if (ext === "pdf") return { Icon: FileText, iconStyle: "bg-rose-500/10 text-rose-400" };
+  if (isImg) return { Icon: ImageIcon, iconStyle: "bg-emerald-500/10 text-emerald-400" };
+  if (isDoc) return { Icon: FileText, iconStyle: "bg-blue-500/10 text-blue-400" };
+  return { Icon: FileIcon, iconStyle: "bg-indigo-500/10 text-indigo-400" };
+}
+
+function groupMaterials(files) {
+  return files.reduce((groups, file) => {
+    const meta = formatMaterialPath(file.file_path || file.title);
+    const folder = meta.folder || "Course files";
+    if (!groups[folder]) groups[folder] = [];
+    groups[folder].push({ ...file, meta });
+    return groups;
+  }, {});
+}
 
 // ─── Lecture thumbnail card ──────────────────────────────────────────────────
-function LectureCard({ lec, i, subjectId, color, subjectCoverImage, subjectLectureThumbnail, onToggleComplete }) {
+function LectureCard({ lec, i, subjectId, color, subjectLectureThumbnail, onToggleComplete }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [imgLoading, setImgLoading] = useState(false);
   const menuRef = useRef(null);
   
   const { status: stat, pct: watchedPct } = getLectureProgress(lec);
   
-  const imgSrc = lec.thumbnail || subjectLectureThumbnail || subjectCoverImage;
+  const imgSrc = lec.thumbnail || subjectLectureThumbnail;
   const hasBg = !!imgSrc;
 
   useEffect(() => {
@@ -208,7 +310,8 @@ function LectureCard({ lec, i, subjectId, color, subjectCoverImage, subjectLectu
 function RecentlyWatched({ lectures, subject }) {
   const recent = lectures
     .filter(l => l.last_position > 0 && !l.is_completed)
-    .slice(0, 4);
+    .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))
+    .slice(0, 1);
   if (recent.length === 0) return null;
 
   return (
@@ -220,7 +323,7 @@ function RecentlyWatched({ lectures, subject }) {
       <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
         {recent.map(lec => {
           const { pct: watchedPct } = getLectureProgress(lec);
-          const imgSrc = lec.thumbnail || subject.default_lecture_thumbnail || subject.cover_image;
+          const imgSrc = lec.thumbnail || subject.default_lecture_thumbnail;
           const cleanTitle = cleanLectureTitle(lec.title);
           return (
             <Link key={lec.id} href={`/courses/${subject.id}/watch/${slugify(cleanTitle)}`}>
@@ -257,46 +360,85 @@ export default function CoursePage() {
   const { id } = useParams();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const metadataQueueRef = useRef(new Set());
   const [tab, setTab] = useState("Lectures");
-  const [showAdd, setShowAdd] = useState(false);
-  const [showFolderImport, setShowFolderImport] = useState(false);
-  const [folderLoaded, setFolderLoaded] = useState(false);
-  const [newLecture, setNewLecture] = useState({ title: "", file_path: "", duration: 0 });
   const [viewMode, setViewMode] = useState("grid"); // grid | list
+  const [syncing, setSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState(null);
 
-  useEffect(() => { loadData(); }, [id]);
-  useEffect(() => { setFolderLoaded(folderStore.hasSubject(id, "course")); }, [id]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     const r = await apiFetch(`/api/courses/${id}`);
     const d = await r.json();
     setData(d);
     setLoading(false);
-  };
+  }, [id]);
 
-  const reconnectFolder = async () => {
-    try {
-      const handle = await window.showDirectoryPicker({ mode: "read" });
-      await folderStore.loadFromHandle(handle, id, "course");
-      setFolderLoaded(true);
-      toast.success("Folder connected — videos ready");
-    } catch (e) {
-      if (e.name !== "AbortError") toast.error("Could not open folder");
-    }
-  };
+  useEffect(() => { loadData(); }, [loadData]);
 
-  const addLecture = async () => {
-    if (!newLecture.title.trim()) return;
-    await apiFetch(`/api/courses/${id}/lectures`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...newLecture, order_index: data?.lectures?.length || 0 }),
-    });
-    toast.success("Lecture added");
-    setNewLecture({ title: "", file_path: "", duration: 0 });
-    setShowAdd(false);
-    loadData();
-  };
+  useEffect(() => {
+    const refreshOnReturn = () => {
+      if (document.visibilityState === "visible") loadData();
+    };
+    window.addEventListener("focus", loadData);
+    document.addEventListener("visibilitychange", refreshOnReturn);
+    return () => {
+      window.removeEventListener("focus", loadData);
+      document.removeEventListener("visibilitychange", refreshOnReturn);
+    };
+  }, [loadData]);
+
+  useEffect(() => {
+    if (!data?.subject || !data?.lectures?.length) return;
+    let cancelled = false;
+
+    const sourceForLecture = (lecture) => {
+      const storedUrl = folderStore.get(lecture.file_path);
+      if (storedUrl) return storedUrl;
+      return null;
+    };
+
+    const missing = data.lectures
+      .filter(lecture => (!lecture.duration || !lecture.thumbnail) && sourceForLecture(lecture))
+      .slice(0, 8);
+
+    if (missing.length === 0) return;
+
+    (async () => {
+      for (const lecture of missing) {
+        const key = `${data.subject.id}:${lecture.id}`;
+        if (metadataQueueRef.current.has(key)) continue;
+        metadataQueueRef.current.add(key);
+        try {
+          const source = sourceForLecture(lecture);
+          const metadata = await getVideoMetadataFromUrl(source, cleanLectureTitle(lecture.title), 4500, false);
+          if (cancelled || (!metadata.duration && !metadata.thumbnail)) continue;
+          const body = {
+            ...(metadata.duration ? { duration: metadata.duration } : {}),
+            ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {}),
+          };
+          const response = await apiFetch(`/api/courses/${id}/lectures/${lecture.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (!response.ok || cancelled) continue;
+          setData(prev => {
+            if (!prev?.lectures) return prev;
+            return {
+              ...prev,
+              lectures: prev.lectures.map(item =>
+                item.id === lecture.id ? { ...item, ...body } : item
+              ),
+            };
+          });
+        } catch {
+          // Some codecs cannot expose frames in the browser; the import flow already has a fallback.
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [data?.subject, data?.lectures, id]);
 
   const updateLectureThumbnail = async (lectureId, imageData) => {
     try {
@@ -336,6 +478,108 @@ export default function CoursePage() {
     } catch { toast.error("Failed to update"); }
   };
 
+  const syncCurrentCourse = async () => {
+    if (syncing || !data?.subject) return;
+    const subjectId = data.subject.id;
+    setSyncing(true);
+    setSyncProgress({ done: 0, total: 1, label: "Opening course folder", current: data.subject.name });
+    try {
+      let restored = await folderStore.reconnect(subjectId, "course");
+      let handle = folderStore.getHandle(subjectId, "course");
+
+      if (!restored.ok || !handle) {
+        if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
+          throw new Error("Folder sync needs Chrome or Edge");
+        }
+        toast.info("Pick this course folder once to reconnect sync");
+        handle = await window.showDirectoryPicker({ mode: "read" });
+        await folderStore.setHandle(subjectId, handle, "course");
+      }
+
+      const entries = await collectBrowserFolderEntries(handle);
+      if (entries.length === 0) throw new Error("No supported videos or materials found");
+      await folderStore.loadFromHandle(handle, subjectId, "course");
+
+      const previousLectures = new Map();
+      for (const lecture of data.lectures || []) {
+        previousLectures.set(lecture.file_path, lecture);
+        previousLectures.set(cleanFileTitle(lecture.title).toLowerCase(), lecture);
+      }
+
+      setSyncProgress({ done: 0, total: entries.length, label: "Clearing old folder index", current: "" });
+      await apiFetch(`/api/courses/${subjectId}/lectures`, { method: "DELETE" });
+      await apiFetch(`/api/courses/${subjectId}/materials?category=material`, { method: "DELETE" });
+
+      let lecturesImported = 0;
+      let materialsImported = 0;
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        setSyncProgress({
+          done: i,
+          total: entries.length,
+          label: entry.type === "video" ? "Reading video duration and thumbnail" : "Importing material",
+          current: entry.title,
+        });
+
+        if (entry.type === "video") {
+          const metadata = await getVideoMetadata(entry.fileHandle, entry.title);
+          const response = await apiFetch(`/api/courses/${subjectId}/lectures`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: entry.title,
+              file_path: entry.file_path,
+              duration: metadata.duration,
+              thumbnail: metadata.thumbnail,
+              order_index: lecturesImported++,
+            }),
+          });
+          const created = await response.json().catch(() => ({}));
+          const previous = previousLectures.get(entry.file_path) || previousLectures.get(entry.title.toLowerCase());
+          if (response.ok && previous && created.lecture?.id) {
+            await apiFetch(`/api/courses/${subjectId}/lectures/${created.lecture.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                last_position: previous.last_position || 0,
+                is_completed: previous.is_completed || 0,
+                watch_count: previous.watch_count || 0,
+                total_watch_time: previous.total_watch_time || 0,
+              }),
+            }).catch(() => {});
+          }
+        } else {
+          await apiFetch(`/api/courses/${subjectId}/materials`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: entry.title,
+              file_path: entry.file_path,
+              category: "material",
+              type: "document",
+              order_index: materialsImported++,
+            }),
+          });
+        }
+
+        setSyncProgress({
+          done: i + 1,
+          total: entries.length,
+          label: "Syncing course folder",
+          current: entry.title,
+        });
+      }
+
+      await loadData();
+      toast.success(`Synced ${lecturesImported} lectures and ${materialsImported} materials`);
+    } catch (e) {
+      if (e.name !== "AbortError") toast.error(e.message || "Could not sync course folder");
+    } finally {
+      setSyncing(false);
+      setSyncProgress(null);
+    }
+  };
+
   if (loading) return <div className="p-6 shimmer h-96 rounded-xl m-6" />;
   if (!data?.subject) return <div className="p-6 text-muted">Course not found</div>;
 
@@ -347,6 +591,9 @@ export default function CoursePage() {
   const inProgressCount = lectures.filter(l => !l.is_completed && l.last_position > 0).length;
   const notStartedCount = lectures.filter(l => !l.is_completed && !l.last_position).length;
   const totalDuration = lectures.reduce((acc, l) => acc + (l.duration || 0), 0);
+  const syncPercent = syncProgress
+    ? Math.round((syncProgress.done / Math.max(syncProgress.total, 1)) * 100)
+    : 0;
 
   const updateCourseCover = async (e) => {
     const file = e.target.files?.[0];
@@ -389,12 +636,32 @@ export default function CoursePage() {
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <AnimatePresence>
-        {showFolderImport && (
-          <FolderImport
-            subjectId={id}
-            onImported={() => { loadData(); }}
-            onClose={() => setShowFolderImport(false)}
-          />
+        {syncing && syncProgress && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/55 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              className="w-full max-w-sm rounded-2xl border border-indigo-500/20 bg-elevated p-6 shadow-2xl"
+            >
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-11 h-11 rounded-xl bg-indigo-500/15 flex items-center justify-center">
+                  <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />
+                </div>
+                <div>
+                  <h2 className="font-display font-semibold text-primary">Syncing Folder</h2>
+                  <p className="text-xs text-muted mt-0.5">Matching this course with the latest folder changes.</p>
+                </div>
+              </div>
+              <div className="flex items-end justify-between mb-2">
+                <span className="text-xs text-secondary">Progress</span>
+                <span className="text-2xl font-mono font-bold text-indigo-400">{syncPercent}%</span>
+              </div>
+              <div className="progress-bar h-2">
+                <div className="progress-fill" style={{ width: `${syncPercent}%` }} />
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
@@ -425,6 +692,12 @@ export default function CoursePage() {
             </div>
             <div className="flex-1 min-w-0 pr-24">
               <h1 className={cn("font-display text-2xl font-bold drop-shadow-md", subject.cover_image ? "text-white" : "text-primary")}>{subject.name}</h1>
+              {subject.teacher_name && (
+                <p className={cn("text-sm mt-1 drop-shadow-md flex items-center gap-1.5", subject.cover_image ? "text-white/85" : "text-indigo-400")}>
+                  <UserRound className="w-3.5 h-3.5" />
+                  {subject.teacher_name}
+                </p>
+              )}
               {subject.description && <p className={cn("text-sm mt-1 drop-shadow-md", subject.cover_image ? "text-white/80" : "text-secondary")}>{subject.description}</p>}
 
               {/* Stats row */}
@@ -454,6 +727,19 @@ export default function CoursePage() {
                 <div className="flex items-center gap-1.5 text-sm font-mono ml-auto bg-indigo-600/10 backdrop-blur-md  px-4 py-2  rounded-md font-medium " style={{color}}>
                  Progress: {progress}%
                 </div>
+                <button
+                  onClick={syncCurrentCourse}
+                  disabled={syncing}
+                  className={cn(
+                    "flex items-center gap-2 text-sm px-4 py-2 rounded-md border backdrop-blur-md transition-colors",
+                    subject.cover_image
+                      ? "bg-black/25 border-white/15 text-white/85 hover:bg-black/35"
+                      : "bg-elevated border-default text-secondary hover:text-primary hover:bg-overlay"
+                  )}
+                >
+                  {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  Sync
+                </button>
               </div>
 
               {/* Progress bar */}
@@ -466,22 +752,6 @@ export default function CoursePage() {
                   style={{ background: progress === 100 ? "#22c55e" : color }}
                 />
               </div>
-
-              {/* Folder status */}
-              {!folderLoaded && lectures.length > 0 && (
-                <button
-                  onClick={reconnectFolder}
-                  className="mt-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs hover:bg-yellow-500/15 transition-colors"
-                >
-                  <FolderOpen className="w-3.5 h-3.5" />
-                  Reconnect folder to play videos
-                </button>
-              )}
-              {folderLoaded && (
-                <p className="mt-2 text-xs text-emerald-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" /> Folder connected
-                </p>
-              )}
             </div>
           </div>
         </div>
@@ -517,76 +787,27 @@ export default function CoursePage() {
               <div className="flex items-center gap-1 p-1 rounded-lg bg-elevated">
                 <button
                   onClick={() => setViewMode("grid")}
-                  className={cn("px-2.5 py-1 rounded text-xs font-medium transition-all",
+                  title="Grid view"
+                  aria-label="Grid view"
+                  className={cn("w-8 h-8 flex items-center justify-center rounded text-xs font-medium transition-all",
                     viewMode === "grid" ? "bg-indigo-600 text-white" : "text-muted hover:text-primary"
                   )}
                 >
-                  Grid
+                  <Grid2X2 className="w-4 h-4" />
                 </button>
                 <button
                   onClick={() => setViewMode("list")}
-                  className={cn("px-2.5 py-1 rounded text-xs font-medium transition-all",
+                  title="List view"
+                  aria-label="List view"
+                  className={cn("w-8 h-8 flex items-center justify-center rounded text-xs font-medium transition-all",
                     viewMode === "list" ? "bg-indigo-600 text-white" : "text-muted hover:text-primary"
                   )}
                 >
-                  List
+                  <List className="w-4 h-4" />
                 </button>
               </div>
-              <button
-                onClick={() => setShowFolderImport(true)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-default bg-elevated hover:bg-overlay text-secondary hover:text-primary text-sm transition-colors"
-              >
-                <FolderOpen className="w-3.5 h-3.5" /> Import
-              </button>
-              <button
-                onClick={() => setShowAdd(v => !v)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" /> Add
-              </button>
             </div>
           </div>
-
-          {/* Add form */}
-          <AnimatePresence>
-            {showAdd && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="overflow-hidden"
-              >
-                <div className="card-surface p-4 border-indigo-500/20">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs text-muted mb-1">Title *</label>
-                      <input
-                        autoFocus
-                        value={newLecture.title}
-                        onChange={e => setNewLecture(v => ({ ...v, title: e.target.value }))}
-                        placeholder="Lecture title"
-                        className="input-base"
-                        onKeyDown={e => e.key === "Enter" && addLecture()}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-muted mb-1">File Path (local)</label>
-                      <input
-                        value={newLecture.file_path}
-                        onChange={e => setNewLecture(v => ({ ...v, file_path: e.target.value }))}
-                        placeholder="/path/to/video.mp4"
-                        className="input-base font-mono text-xs"
-                      />
-                    </div>
-                  </div>
-                  <div className="flex gap-2 mt-3">
-                    <button onClick={addLecture} className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm hover:bg-indigo-500 transition-colors">Add</button>
-                    <button onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-lg border border-default text-secondary text-sm">Cancel</button>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
 
           {/* Lecture list / grid */}
           {lectures.length === 0 ? (
@@ -594,14 +815,8 @@ export default function CoursePage() {
               <Film className="w-12 h-12 text-muted" />
               <div className="text-center">
                 <p className="text-secondary font-medium">No lectures yet</p>
-                <p className="text-sm text-muted mt-1">Add individually or import an entire folder at once</p>
+                <p className="text-sm text-muted mt-1">Create the course from a folder, then use Sync here when files change</p>
               </div>
-              <button
-                onClick={() => setShowFolderImport(true)}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-500/15 text-indigo-400 text-sm hover:bg-indigo-500/25 transition-colors"
-              >
-                <FolderOpen className="w-4 h-4" /> Import Folder
-              </button>
             </div>
           ) : viewMode === "grid" ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -612,7 +827,6 @@ export default function CoursePage() {
                   i={i}
                   subjectId={id}
                   color={color}
-                  subjectCoverImage={subject.cover_image}
                   subjectLectureThumbnail={subject.default_lecture_thumbnail}
                   onToggleComplete={toggleLectureComplete}
                 />
@@ -643,9 +857,9 @@ export default function CoursePage() {
                       )}>
                         {/* Thumbnail or number */}
                         <div className="w-14 h-9 rounded-lg overflow-hidden flex-shrink-0 bg-black/20 relative">
-                          {(lec.thumbnail || subject.default_lecture_thumbnail || subject.cover_image) ? (
+                          {(lec.thumbnail || subject.default_lecture_thumbnail) ? (
                             <>
-                              <img src={lec.thumbnail || subject.default_lecture_thumbnail || subject.cover_image} alt="" className="w-full h-full object-cover opacity-80" />
+                              <img src={lec.thumbnail || subject.default_lecture_thumbnail} alt="" className="w-full h-full object-cover opacity-80" />
                               <div className="absolute inset-0 bg-black/30 flex items-center justify-center text-xs font-mono font-bold text-white drop-shadow-md">
                                 {stat === "completed" ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : i + 1}
                               </div>
@@ -719,76 +933,107 @@ export default function CoursePage() {
       {/* Materials tab */}
       {tab === "Materials" && (
         <div className="space-y-4">
-          <h2 className="font-display font-semibold text-primary">Course Materials</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {(() => {
-              const MATERIAL_EXTS = ["pdf", "doc", "docx", "txt", "jpg", "jpeg", "png", "webp"];
-              const files = folderStore.getFilesForSubject(id, "course")
-                .filter(fname => MATERIAL_EXTS.includes(fname.split('.').pop()?.toLowerCase()))
-                .map((fname, i) => ({
-                  id: `folder-${i}`,
-                  title: fname.replace(/\.[^.]+$/, ""),
-                  file_path: fname,
-                  url: folderStore.get(fname)
-                }));
+          <div>
+            <h2 className="font-display font-semibold text-primary">Course Materials</h2>
+            <p className="text-xs text-muted mt-1">A clean folder view for notes, DPPs, PDFs, and images.</p>
+          </div>
+          {(() => {
+            const folderFiles = folderStore.getFilesForSubject(id, "course")
+              .filter(fname => MATERIAL_EXTS.includes(fname.split('.').pop()?.toLowerCase()))
+              .map((fname, i) => ({
+                id: `folder-${i}`,
+                title: fname.replace(/\.[^.]+$/, ""),
+                file_path: fname,
+                url: folderStore.get(fname)
+              }));
+            const dbFiles = materials.map((m) => ({
+              ...m,
+              url: folderStore.get(m.file_path),
+            }));
+            const files = dbFiles.length > 0 ? dbFiles : folderFiles;
+            const groups = groupMaterials(files);
+            const groupEntries = Object.entries(groups).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
 
-              if (files.length === 0) {
-                return (
-                  <div className="col-span-full flex flex-col items-center py-16 gap-4">
-                    <FileText className="w-12 h-12 text-muted" />
-                    <div className="text-center">
-                      <p className="text-secondary font-medium">No materials found in folder</p>
-                      <p className="text-sm text-muted mt-1">Connect the course folder containing PDFs or images</p>
-                    </div>
+            if (files.length === 0) {
+              return (
+                <div className="flex flex-col items-center py-16 gap-4">
+                  <FileText className="w-12 h-12 text-muted" />
+                  <div className="text-center">
+                    <p className="text-secondary font-medium">No materials found in folder</p>
+                    <p className="text-sm text-muted mt-1">Sync this course after adding PDFs, notes, DPPs, or images.</p>
                   </div>
-                );
-              }
+                </div>
+              );
+            }
 
-              return files.map((m, i) => {
-                const ext = m.file_path.split('.').pop()?.toLowerCase();
-                const isImg = ["jpg", "jpeg", "png", "webp"].includes(ext);
-                const isDoc = ["doc", "docx", "txt"].includes(ext);
-                
-                let Icon = FileIcon;
-                let iconStyle = "bg-indigo-500/10 text-indigo-400";
-                
-                if (ext === "pdf") {
-                  Icon = FileText;
-                  iconStyle = "bg-rose-500/10 text-rose-400";
-                } else if (isImg) {
-                  Icon = ImageIcon;
-                  iconStyle = "bg-emerald-500/10 text-emerald-400";
-                } else if (isDoc) {
-                  Icon = FileText;
-                  iconStyle = "bg-blue-500/10 text-blue-400";
-                }
-
-                const cleanTitle = m.title.replace(/^[0-9]+[\s_\-]*/, '').replace(/_/g, ' ');
-
-                return (
-                  <motion.a
-                    key={m.id}
-                    href={m.url || '#'}
-                    target="_blank"
-                    rel="noreferrer"
+            return (
+              <div className="columns-1 xl:columns-2 gap-4 space-y-4">
+                {groupEntries.map(([folder, items], groupIndex) => (
+                  <motion.section
+                    key={folder}
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.03 }}
-                    className="flex items-center gap-4 p-4 rounded-xl border card-surface hover:border-indigo-500/50 cursor-pointer group"
+                    transition={{ delay: groupIndex * 0.03 }}
+                    className="break-inside-avoid rounded-xl border border-default bg-surface overflow-hidden"
                   >
-                    <div className={cn("w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0", iconStyle)}>
-                      <Icon className="w-5 h-5" />
+                    <div
+                      className="flex items-center justify-between gap-3 px-4 py-3 border-b border-indigo-500/15"
+                      style={{
+                        background: `linear-gradient(135deg, ${color}18 0%, rgba(99,102,241,0.08) 55%, rgba(255,255,255,0.03) 100%)`,
+                      }}
+                    >
+                      <div className="min-w-0 flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-lg bg-black/20 border border-white/8 flex items-center justify-center flex-shrink-0">
+                          <Folder className="w-4 h-4" style={{ color }} />
+                        </div>
+                        <div className="min-w-0">
+                          <h3 className="text-sm font-semibold text-primary truncate">{folder}</h3>
+                          <p className="text-[11px] text-muted">Folder</p>
+                        </div>
+                      </div>
+                      <div className="px-2.5 py-1 rounded-full bg-black/20 border border-white/8 text-[11px] font-mono text-secondary flex-shrink-0">
+                        {items.length} files
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-sm text-primary truncate" title={cleanTitle}>{cleanTitle}</p>
-                      <p className="text-xs text-muted truncate mt-0.5 uppercase font-mono">{ext} Document</p>
+                    <div className="divide-y divide-default">
+                      {items
+                        .sort((a, b) => a.meta.name.localeCompare(b.meta.name, undefined, { numeric: true, sensitivity: "base" }))
+                        .map((m) => {
+                          const ext = m.meta.ext;
+                          const { Icon, iconStyle } = materialIconForExt(ext);
+                          const kind = ext ? ext.toUpperCase() : "FILE";
+                          return (
+                            <a
+                              key={m.id}
+                              href={m.url || undefined}
+                              target={m.url ? "_blank" : undefined}
+                              rel={m.url ? "noreferrer" : undefined}
+                              title={m.meta.display}
+                              onClick={(e) => {
+                                if (!m.url) {
+                                  e.preventDefault();
+                                  toast.info("Sync this course folder to open the latest local file.");
+                                }
+                              }}
+                              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 hover:bg-overlay transition-colors"
+                            >
+                              <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center", iconStyle)}>
+                                <Icon className="w-4 h-4" />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-primary truncate">{m.meta.name}</p>
+                                <p className="text-[10px] text-muted uppercase font-mono">{kind}</p>
+                              </div>
+                              <ExternalLink className={cn("w-3.5 h-3.5 flex-shrink-0", m.url ? "text-muted group-hover:text-indigo-400" : "text-muted/40")} />
+                            </a>
+                          );
+                        })}
                     </div>
-                    <ExternalLink className="w-4 h-4 text-muted group-hover:text-indigo-400 transition-colors" />
-                  </motion.a>
-                );
-              });
-            })()}
-          </div>
+                  </motion.section>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
 

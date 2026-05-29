@@ -33,6 +33,7 @@ export const SCHEMA = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    teacher_name TEXT DEFAULT '',
     color TEXT,
     folder_path TEXT,
     videos_path TEXT DEFAULT '',

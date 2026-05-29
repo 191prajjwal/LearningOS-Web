@@ -52,21 +52,24 @@ export const subjectsQ = {
   getAll: (userId) => dbQuery(`
     SELECT s.*,
            (SELECT SUM(duration) FROM lectures WHERE subject_id = s.id AND user_id = ?) as total_duration,
-           (SELECT title FROM lectures WHERE subject_id = s.id AND user_id = ? AND last_position > 0 AND is_completed = 0 ORDER BY updated_at DESC LIMIT 1) as recently_watched
+           (SELECT title FROM lectures WHERE subject_id = s.id AND user_id = ? AND last_position > 0 AND is_completed = 0 ORDER BY updated_at DESC LIMIT 1) as recently_watched,
+           (SELECT id FROM lectures WHERE subject_id = s.id AND user_id = ? AND last_position > 0 AND is_completed = 0 ORDER BY updated_at DESC LIMIT 1) as recently_watched_id,
+           (SELECT last_position FROM lectures WHERE subject_id = s.id AND user_id = ? AND last_position > 0 AND is_completed = 0 ORDER BY updated_at DESC LIMIT 1) as recently_watched_position,
+           (SELECT duration FROM lectures WHERE subject_id = s.id AND user_id = ? AND last_position > 0 AND is_completed = 0 ORDER BY updated_at DESC LIMIT 1) as recently_watched_duration
     FROM subjects s WHERE s.user_id = ? ORDER BY s.name
-  `, [userId, userId, userId]),
+  `, [userId, userId, userId, userId, userId, userId]),
   getById: (id, userId) => dbGet("SELECT * FROM subjects WHERE id = ? AND user_id = ?", [id, userId]),
   resolveId: async (idOrSlug, userId) => {
     // If it's a number, just return it
     if (!isNaN(idOrSlug)) return idOrSlug;
-    // Otherwise, try to find by name (slugified)
-    const row = await dbGet("SELECT id FROM subjects WHERE REPLACE(LOWER(name), ' ', '-') = ? AND user_id = ?", [String(idOrSlug).toLowerCase(), userId]);
-    return row ? row.id : idOrSlug;
+    const rows = await dbQuery("SELECT id, name FROM subjects WHERE user_id = ?", [userId]);
+    const match = rows.find(row => slugify(row.name) === String(idOrSlug).toLowerCase());
+    return match ? match.id : idOrSlug;
   },
   create: async (userId, data) => {
     const r = await dbRun(
-      "INSERT INTO subjects (user_id, name, color, folder_path, description, weightage, syllabus_pdf, cover_image, default_lecture_thumbnail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [userId, data.name, data.color, data.folder_path, data.description, data.weightage || 0, data.syllabus_pdf || '', data.cover_image || '', data.default_lecture_thumbnail || '']
+      "INSERT INTO subjects (user_id, name, teacher_name, color, folder_path, description, weightage, syllabus_pdf, cover_image, default_lecture_thumbnail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [userId, data.name, data.teacher_name || '', data.color, data.folder_path, data.description, data.weightage || 0, data.syllabus_pdf || '', data.cover_image || '', data.default_lecture_thumbnail || '']
     );
     return r.lastInsertRowid;
   },

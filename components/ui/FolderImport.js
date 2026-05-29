@@ -1,6 +1,6 @@
 "use client";
 import { apiFetch } from "../../lib/api";
-import { useState, useRef, useCallback } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   FolderOpen, Film, FileText, Check, X, Edit2, ArrowUp, ArrowDown,
@@ -9,12 +9,13 @@ import {
 import { toast } from "sonner";
 import { cn } from "../../lib/utils";
 import { folderStore } from "../../lib/folder-store";
+import { getVideoMetadata } from "../../lib/video-metadata";
 
 function naturalSort(a, b) {
   return a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: "base" });
 }
 
-const VIDEO_EXTS = ["mp4", "mkv", "webm", "mov", "avi", "m4v", "flv"];
+const VIDEO_EXTS = ["mp4", "mkv", "webm", "mov", "avi", "m4v", "flv", "wmv", "ogg", "ogv", "ts", "mts", "m2ts", "3gp"];
 const MATERIAL_EXTS = ["pdf", "doc", "docx", "txt", "jpg", "jpeg", "png", "webp"];
 
 function isVideo(name) {
@@ -31,7 +32,7 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
   const [step, setStep] = useState("pick"); // pick | preview | importing | done
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
-  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [progress, setProgress] = useState({ done: 0, total: 0, label: "Importing", current: "" });
 
   const isSupported = typeof window !== "undefined" && "showDirectoryPicker" in window;
 
@@ -40,7 +41,7 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
       const handle = await window.showDirectoryPicker({ mode: "read" });
       const files = [];
       
-      async function collectFiles(dirHandle, path = "", isRoot = true) {
+    async function collectFiles(dirHandle, path = "") {
         for await (const entry of dirHandle.values()) {
           if (entry.kind === "file") {
             const isVid = isVideo(entry.name);
@@ -48,8 +49,7 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
             
             if (importCategory === "dpp" && !isMat) continue;
             
-            // Allow videos only in root (as requested), materials anywhere
-            if ((isVid && isRoot) || isMat) {
+            if (isVid || isMat) {
               const fullPath = path + entry.name;
               files.push({
                 id: fullPath,
@@ -58,11 +58,11 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
                 original_name: entry.name,
                 type: isVid ? "video" : "material",
                 selected: true,
-                handle: dirHandle
+                fileHandle: entry
               });
             }
           } else if (entry.kind === "directory") {
-            await collectFiles(entry, path + entry.name + "/", false);
+            await collectFiles(entry, path + entry.name + "/");
           }
         }
       }
@@ -105,7 +105,7 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
   const handleImport = async () => {
     if (selectedEntries.length === 0) return toast.error("Select at least one lecture");
     setStep("importing");
-    setProgress({ done: 0, total: selectedEntries.length });
+    setProgress({ done: 0, total: selectedEntries.length, label: "Preparing folder", current: "" });
 
     // Clear old items first as requested to prevent duplicates
     try {
@@ -132,66 +132,29 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
     for (let i = 0; i < selectedEntries.length; i++) {
       const entry = selectedEntries[i];
       try {
+        setProgress({
+          done: i,
+          total: selectedEntries.length,
+          label: entry.type === "video" ? "Reading video duration and thumbnail" : "Importing material",
+          current: entry.title,
+        });
         if (entry.type === "video") {
-          let duration = 0;
-          let thumbnail = null;
-          try {
-            const handle = await entry.handle.getFileHandle(entry.original_name);
-            const file = await handle.getFile();
-            const metadata = await new Promise((resolve) => {
-              const video = document.createElement("video");
-              video.preload = "auto";
-              video.muted = true;
-              video.playsInline = true;
-              
-              const cleanup = () => URL.revokeObjectURL(video.src);
+          const metadata = await getVideoMetadata(entry.fileHandle, entry.title);
 
-              video.onloadeddata = () => {
-                video.currentTime = Math.min(1.5, video.duration / 3 || 0); // Seek to 1.5 seconds to get a good frame
-              };
-
-              video.onseeked = () => {
-                try {
-                  const canvas = document.createElement("canvas");
-                  canvas.width = 400; // Good quality thumbnail
-                  canvas.height = (video.videoHeight / video.videoWidth) * 400 || 225;
-                  const ctx = canvas.getContext("2d");
-                  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                  const dataUrl = canvas.toDataURL("image/jpeg", 0.65);
-                  resolve({ d: Math.round(video.duration) || 0, t: dataUrl });
-                } catch (e) {
-                  resolve({ d: Math.round(video.duration) || 0, t: null });
-                } finally {
-                  cleanup();
-                }
-              };
-
-              video.onerror = () => {
-                cleanup();
-                resolve({ d: 0, t: null });
-              };
-              
-              video.src = URL.createObjectURL(file);
-            });
-            duration = metadata.d;
-            thumbnail = metadata.t;
-          } catch (e) {
-            console.error("Could not fetch duration/thumbnail for", entry.file_name, e);
-          }
-
-          await apiFetch(`/api/courses/${subjectId}/lectures`, {
+          const response = await apiFetch(`/api/courses/${subjectId}/lectures`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               title: entry.title,
               file_path: entry.file_name,
-              duration,
-              thumbnail,
+              duration: metadata.duration,
+              thumbnail: metadata.thumbnail,
               order_index: i,
             }),
           });
+          if (!response.ok) failed++;
         } else {
-          await apiFetch(`/api/courses/${subjectId}/materials`, {
+          const response = await apiFetch(`/api/courses/${subjectId}/materials`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -202,9 +165,15 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
               order_index: i,
             }),
           });
+          if (!response.ok) failed++;
         }
       } catch { failed++; }
-      setProgress({ done: i + 1, total: selectedEntries.length });
+      setProgress({
+        done: i + 1,
+        total: selectedEntries.length,
+        label: "Importing folder",
+        current: entry.title,
+      });
     }
 
     setStep("done");
@@ -231,7 +200,7 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
             <p className="text-xs text-muted">
               {step === "pick" && "Pick a folder — files load directly, no path needed"}
               {step === "preview" && `${entries.length} files found · ${selectedEntries.length} selected`}
-              {step === "importing" && `Importing ${progress.done} / ${progress.total}…`}
+              {step === "importing" && `${progress.label} ${progress.done} / ${progress.total}...`}
               {step === "done" && `Done! ${selectedEntries.length} files imported`}
             </p>
           </div>
@@ -337,11 +306,14 @@ export default function FolderImport({ subjectId, importCategory = "course", onI
               <Loader2 className="w-10 h-10 animate-spin text-indigo-400" />
               <div className="w-full max-w-xs">
                 <div className="flex justify-between text-xs text-muted mb-2">
-                  <span>Importing…</span><span>{progress.done} / {progress.total}</span>
+                  <span className="truncate">{progress.label}</span><span>{progress.done} / {progress.total}</span>
                 </div>
                 <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${(progress.done / progress.total) * 100}%` }} />
+                  <div className="progress-fill" style={{ width: `${Math.round((progress.done / Math.max(progress.total, 1)) * 100)}%` }} />
                 </div>
+                {progress.current && (
+                  <p className="text-[11px] text-muted mt-2 truncate text-center">{progress.current}</p>
+                )}
               </div>
             </div>
           )}

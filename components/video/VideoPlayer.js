@@ -22,6 +22,8 @@ export default function VideoPlayer({ subjectId, lectureId }) {
   const progressRef = useRef(null);
   const sessionStartRef = useRef(null);
   const sessionStartPosRef = useRef(0);
+  const playedSecondsRef = useRef(0);
+  const lastTimeRef = useRef(0);
   const pauseCountRef = useRef(0);
   const hideTimer = useRef(null);
 
@@ -63,6 +65,13 @@ export default function VideoPlayer({ subjectId, lectureId }) {
         slugify(cleanLectureTitle(l.title)) === lectureId
       );
       if (!lec) { setError("Lecture not found"); return; }
+
+      if (!folderStore.getForLecture(lec.file_path)) {
+        const restored = await folderStore.reconnect(cData.subject?.id || subjectId, "course");
+        if (!restored.ok && String(cData.subject?.id) !== String(subjectId)) {
+          await folderStore.reconnect(subjectId, "course");
+        }
+      }
 
       setLecture(lec);
       setSubject(cData.subject);
@@ -118,6 +127,9 @@ export default function VideoPlayer({ subjectId, lectureId }) {
   const onTimeUpdate = () => {
     const v = videoRef.current;
     if (!v) return;
+    const delta = v.currentTime - lastTimeRef.current;
+    if (!v.paused && delta > 0 && delta < 2) playedSecondsRef.current += delta;
+    lastTimeRef.current = v.currentTime;
     setCurrentTime(v.currentTime);
     // Update buffered
     if (v.buffered.length > 0) {
@@ -131,13 +143,15 @@ export default function VideoPlayer({ subjectId, lectureId }) {
     v.playbackRate = speed;
     sessionStartRef.current = Date.now();
     sessionStartPosRef.current = v.currentTime;
+    lastTimeRef.current = v.currentTime;
+    playedSecondsRef.current = 0;
   };
 
   const onEnded = async () => {
     setPlaying(false);
     await saveWatchSession(true);
     // Autoplay next
-    const idx = lectures.findIndex(l => String(l.id) === String(lectureId));
+    const idx = lectures.findIndex(l => String(l.id) === String(lecture?.id));
     if (idx < lectures.length - 1) {
       const next = lectures[idx + 1];
       router.push(`/courses/${subjectId}/watch/${next.id}`);
@@ -152,45 +166,52 @@ export default function VideoPlayer({ subjectId, lectureId }) {
   const onPlay = () => setPlaying(true);
 
   // Save watch session to DB
-  const saveWatchSession = async (completed = false) => {
+  const saveWatchSession = async (completed = false, keepalive = false) => {
     const v = videoRef.current;
     if (!v || !sessionStartRef.current) return;
 
     const wallTime = (Date.now() - sessionStartRef.current) / 1000;
-    const duration = Math.min(wallTime, v.currentTime - sessionStartPosRef.current + 30);
+    const positionDelta = Math.max(0, v.currentTime - sessionStartPosRef.current);
+    const duration = Math.max(0, Math.min(wallTime, playedSecondsRef.current || positionDelta));
     if (duration < 5) return;
 
     const positionPct = v.duration > 0 ? (v.currentTime / v.duration) * 100 : 0;
+    const payload = JSON.stringify({
+      lecture_id: lecture?.id || lectureId,
+      subject_id: subject?.id || subjectId,
+      duration: Math.max(0.1, duration / 60),
+      start_pos: sessionStartPosRef.current,
+      end_pos: v.currentTime,
+      speed,
+      pauses: pauseCountRef.current,
+      position_pct: completed ? 100 : positionPct,
+    });
 
     await apiFetch("/api/db?q=watch-session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        lecture_id: lectureId,
-        subject_id: subjectId,
-        duration: Math.round(duration / 60), // minutes
-        start_pos: sessionStartPosRef.current,
-        end_pos: v.currentTime,
-        speed,
-        pauses: pauseCountRef.current,
-        position_pct: positionPct,
-      }),
+      body: payload,
+      keepalive,
     });
 
     sessionStartRef.current = Date.now();
     sessionStartPosRef.current = v.currentTime;
+    playedSecondsRef.current = 0;
+    lastTimeRef.current = v.currentTime;
     pauseCountRef.current = 0;
   };
 
   // Save on unmount and periodically
   useEffect(() => {
     const interval = setInterval(() => saveWatchSession(), 60000);
-    window.addEventListener("beforeunload", () => saveWatchSession());
+    const handleBeforeUnload = () => { saveWatchSession(false, true); };
+    window.addEventListener("beforeunload", handleBeforeUnload);
     return () => {
       clearInterval(interval);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
       saveWatchSession();
     };
-  }, [lectureId, speed]);
+  }, [lecture?.id, subject?.id, speed]);
 
   // Controls
   const togglePlay = () => {
@@ -257,13 +278,15 @@ export default function VideoPlayer({ subjectId, lectureId }) {
   };
 
   const navLecture = (dir) => {
-    const idx = lectures.findIndex(l => String(l.id) === String(lectureId));
+    const idx = lectures.findIndex(l => String(l.id) === String(lecture?.id));
     const next = lectures[idx + dir];
     if (next) router.push(`/courses/${subjectId}/watch/${next.id}`);
   };
 
-  const currentIdx = lectures.findIndex(l => String(l.id) === String(lectureId));
+  const currentIdx = lectures.findIndex(l => String(l.id) === String(lecture?.id));
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const folderBlobSrc = folderStore.getForLecture(lecture?.file_path);
+  const videoSrc = folderBlobSrc || null;
 
   if (loading) return (
     <div className="flex items-center justify-center h-screen bg-base">
@@ -316,10 +339,10 @@ export default function VideoPlayer({ subjectId, lectureId }) {
           onMouseMove={resetHideTimer}
           onClick={togglePlay}
         >
-          {lecture?.file_path ? (
+          {lecture?.file_path && videoSrc ? (
             <video
-              ref={videoRef}
-             src={folderStore.getForLecture(lecture.file_path) || `/api/video?path=${encodeURIComponent(lecture.file_path)}`}
+             ref={videoRef}
+             src={videoSrc}
               className="w-full h-full object-contain"
               onTimeUpdate={onTimeUpdate}
               onLoadedMetadata={onLoadedMetadata}
@@ -331,8 +354,10 @@ export default function VideoPlayer({ subjectId, lectureId }) {
             <div className="flex items-center justify-center h-full">
               <div className="text-center text-muted">
                 <BookOpen className="w-12 h-12 mx-auto mb-3" />
-                <p>No video file path set for this lecture</p>
-                <p className="text-xs mt-1">Edit the lecture to add a file path</p>
+                <p>{lecture?.file_path ? "Folder permission could not be restored" : "No video file path set for this lecture"}</p>
+                <p className="text-xs mt-1">
+                  {lecture?.file_path ? "Use a saved local folder path for fully refresh-safe playback." : "Edit the lecture to add a file path"}
+                </p>
               </div>
             </div>
           )}
@@ -534,8 +559,8 @@ export default function VideoPlayer({ subjectId, lectureId }) {
             className="border-l border-default overflow-hidden flex-shrink-0"
           >
             <VideoNotes
-              lectureId={lectureId}
-              subjectId={subjectId}
+              lectureId={lecture?.id || lectureId}
+              subjectId={subject?.id || subjectId}
               currentTime={currentTime}
               onSeek={(t) => { if (videoRef.current) videoRef.current.currentTime = t; }}
             />

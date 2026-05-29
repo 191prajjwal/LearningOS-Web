@@ -1,0 +1,10 @@
+/* Zenith Brand Colors */
+:root {
+  --zenith-primary:   #0F766E;
+  --zenith-accent:    #2DD4BF;
+  --zenith-dark-bg:   #0d1117;
+  --zenith-tint:      #E1F5EE;
+  --zenith-mid:       #9FE1CB;
+  --zenith-dim:       #5DCAA5;
+  --zenith-white:     #FFFFFF;
+}

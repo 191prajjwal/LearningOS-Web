@@ -28,6 +28,7 @@ export async function PUT(req, { params }) {
     const userId = requireUserId(req);
     const resolvedId = await subjectsQ.resolveId(id, userId);
     const body = await req.json();
+    delete body.folder_path;
     await subjectsQ.update(resolvedId, userId, body);
     const subject = await subjectsQ.getById(resolvedId, userId);
     return NextResponse.json({ subject });
@@ -43,6 +44,7 @@ export async function PATCH(req, { params }) {
     const userId = requireUserId(req);
     const resolvedId = await subjectsQ.resolveId(id, userId);
     const body = await req.json();
+    delete body.folder_path;
     await subjectsQ.update(resolvedId, userId, body);
     const subject = await subjectsQ.getById(resolvedId, userId);
     return NextResponse.json({ subject });

@@ -301,7 +301,7 @@
   /* Progress bar */
   .progress-bar {
     height: 3px; /* ↓ was 4px */
-    background: rgba(255,255,255,0.08);
+    background: rgb(var(--bg-elevated));
     border-radius: 99px;
     overflow: hidden;
   }
@@ -345,16 +345,16 @@
     width: 30px; /* ↓ was 36px */
     height: 30px; /* ↓ was 36px */
     border-radius: 7px; /* ↓ was 8px */
-    background: rgba(255,255,255,0.08);
-    border: 1px solid rgba(255,255,255,0.06);
+    background: rgb(var(--bg-elevated));
+    border: 1px solid rgba(var(--border));
     color: rgb(var(--text-primary));
     cursor: pointer;
     transition: all var(--transition);
   }
 
   .video-btn:hover {
-    background: rgba(255,255,255,0.15);
-    border-color: rgba(255,255,255,0.12);
+    background: rgb(var(--bg-overlay));
+    border-color: rgba(var(--border-strong));
   }
 
   /* Score badge */
@@ -587,10 +587,13 @@
   .bg-surface { background-color: rgb(var(--bg-surface)); }
   .bg-elevated { background-color: rgb(var(--bg-elevated)); }
   .bg-card { background-color: rgb(var(--bg-card)); }
+  .bg-overlay { background-color: rgb(var(--bg-overlay)); }
+  .bg-input { background-color: rgb(var(--bg-input)); }
+  .bg-muted { background-color: rgb(var(--muted)); }
 
-  .border-subtle { border-color: rgba(255,255,255,0.04); }
-  .border-default { border-color: rgba(255,255,255,0.07); }
-  .border-strong { border-color: rgba(255,255,255,0.14); }
+  .border-subtle { border-color: rgba(var(--border-subtle)); }
+  .border-default { border-color: rgba(var(--border)); }
+  .border-strong { border-color: rgba(var(--border-strong)); }
 
   .accent { color: rgb(var(--accent-light)); }
   .accent-bg { background-color: rgb(var(--accent)); }

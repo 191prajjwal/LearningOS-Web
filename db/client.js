@@ -47,6 +47,11 @@ export async function initDb() {
     } catch (e) {
       // Ignore if already exists
     }
+    try {
+      await db.execute("ALTER TABLE subjects ADD COLUMN teacher_name TEXT DEFAULT ''");
+    } catch (e) {
+      // Ignore if already exists
+    }
 
     _initialized = true;
   } catch (e) {

@@ -18,6 +18,10 @@ export async function POST(req) {
   try {
     const userId = requireUserId(req);
     const body = await req.json();
+    delete body.folder_path;
+    if (!body.name?.trim() || !body.teacher_name?.trim()) {
+      return NextResponse.json({ error: "Course name and teacher name are required" }, { status: 400 });
+    }
     const id = await subjectsQ.create(userId, body);
     const subject = await subjectsQ.getById(id, userId);
     return NextResponse.json({ subject }, { status: 201 });

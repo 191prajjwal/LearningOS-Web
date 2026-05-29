@@ -1,0 +1,6 @@
+<svg width="200" height="52" viewBox="0 0 200 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M26 6 L42 38 L26 30 L10 38 Z" fill="#0F766E"/>
+  <circle cx="26" cy="6" r="3" fill="#2DD4BF"/>
+  <path d="M10 38 L42 38" stroke="#0F766E" stroke-width="2" stroke-linecap="round" opacity="0.35"/>
+  <text x="56" y="30" font-family="system-ui,sans-serif" font-size="22" font-weight="600" fill="#0F766E" letter-spacing="-0.5">Zenith</text>
+</svg>

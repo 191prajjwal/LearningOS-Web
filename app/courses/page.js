@@ -5,12 +5,49 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus, BookOpen, Trash2, ChevronRight, Search, Film,
   CheckCircle2, Clock, PlayCircle, MoreVertical, ImagePlus,
-  X, Palette, AlignLeft, Loader2, Edit2
+  X, Loader2, Edit2, FolderOpen, UserRound
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { cn, pct, subjectColor, truncate, formatDuration } from "../../lib/utils";
+import { cn, pct, subjectColor, formatDuration } from "../../lib/utils";
 import { CHART_COLORS } from "../../lib/constants";
+import { folderStore } from "../../lib/folder-store";
+import { getVideoMetadata } from "../../lib/video-metadata";
+
+const VIDEO_EXTS = ["mp4", "mkv", "webm", "mov", "avi", "m4v", "flv", "wmv", "ogg", "ogv", "ts", "mts", "m2ts", "3gp"];
+const MATERIAL_EXTS = ["pdf", "doc", "docx", "txt", "jpg", "jpeg", "png", "webp"];
+
+function isSupportedCourseFile(name) {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  return VIDEO_EXTS.includes(ext) || MATERIAL_EXTS.includes(ext);
+}
+
+function isVideoFile(name) {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  return VIDEO_EXTS.includes(ext);
+}
+
+function cleanFileTitle(name) {
+  return name.replace(/\.[^.]+$/, "").replace(/^[0-9]+[\s_.-]*/, "").replace(/_/g, " ").trim();
+}
+
+async function collectBrowserFolderEntries(dirHandle, path = "", found = []) {
+  for await (const entry of dirHandle.values()) {
+    if (entry.kind === "directory") {
+      await collectBrowserFolderEntries(entry, `${path}${entry.name}/`, found);
+    } else if (entry.kind === "file" && isSupportedCourseFile(entry.name)) {
+      const fileName = `${path}${entry.name}`;
+      found.push({
+        id: fileName,
+        title: cleanFileTitle(entry.name) || entry.name,
+        file_path: fileName,
+        fileHandle: entry,
+        type: isVideoFile(entry.name) ? "video" : "material",
+      });
+    }
+  }
+  return found.sort((a, b) => a.file_path.localeCompare(b.file_path, undefined, { numeric: true, sensitivity: "base" }));
+}
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 function statusBadge(progress) {
@@ -220,6 +257,12 @@ function CourseCard({ sub, onDelete, onEdit, onImageChange, onThumbnailChange, i
                 ) : (
                   <p className="text-[11px] text-muted opacity-50 mt-1">Course materials</p>
                 )}
+                {sub.teacher_name && (
+                  <p className="text-[11px] text-indigo-400/90 truncate mt-1 flex items-center gap-1">
+                    <UserRound className="w-3 h-3" />
+                    {sub.teacher_name}
+                  </p>
+                )}
               </div>
               <div className="flex flex-col items-end flex-shrink-0">
                 <span className="text-[13px] font-mono font-bold" style={{ color: progress === 100 ? "#34d399" : color }}>
@@ -280,8 +323,14 @@ export default function CoursesPage() {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all"); // all | inprogress | completed | notstarted
   const [editingSubject, setEditingSubject] = useState(null);
+  const [selectedFolderHandle, setSelectedFolderHandle] = useState(null);
+  const [selectedFolderCount, setSelectedFolderCount] = useState(0);
+  const [selectedFolderVideos, setSelectedFolderVideos] = useState(0);
+  const [selectedFolderMaterials, setSelectedFolderMaterials] = useState(0);
+  const [creatingSubject, setCreatingSubject] = useState(false);
+  const [importProgress, setImportProgress] = useState(null);
   const [newSubject, setNewSubject] = useState({
-    name: "", description: "", color: CHART_COLORS[0], cover_image: null
+    name: "", teacher_name: "", description: "", color: CHART_COLORS[0], cover_image: null
   });
 
   useEffect(() => { loadSubjects(); }, []);
@@ -293,19 +342,159 @@ export default function CoursesPage() {
     setLoading(false);
   };
 
-  const createSubject = async () => {
-    if (!newSubject.name.trim()) return;
+  const browseCourseFolder = async () => {
+    if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
+      toast.error("Folder browsing needs Chrome or Edge");
+      return;
+    }
     try {
-      await apiFetch("/api/courses", {
+      const handle = await window.showDirectoryPicker({ mode: "read" });
+      const entries = await collectBrowserFolderEntries(handle);
+      if (entries.length === 0) {
+        toast.error("No supported videos or materials found");
+        return;
+      }
+      const videos = entries.filter(e => e.type === "video").length;
+      const materials = entries.length - videos;
+      setSelectedFolderHandle(handle);
+      setSelectedFolderCount(entries.length);
+      setSelectedFolderVideos(videos);
+      setSelectedFolderMaterials(materials);
+      setNewSubject(v => ({
+        ...v,
+        name: v.name.trim() ? v.name : handle.name,
+        description: v.description || `${videos} videos, ${materials} materials from ${handle.name}`,
+      }));
+      toast.success(`Selected ${handle.name}`);
+    } catch (e) {
+      if (e.name !== "AbortError") toast.error("Could not open folder");
+    }
+  };
+
+  const importBrowserFolder = async (subjectId, handle, onProgress, { replaceExisting = false } = {}) => {
+    const entries = await collectBrowserFolderEntries(handle);
+    if (entries.length === 0) throw new Error("No supported videos or materials found");
+    await folderStore.loadFromHandle(handle, subjectId, "course");
+    const previousLectures = new Map();
+
+    if (replaceExisting) {
+      const response = await apiFetch(`/api/courses/${subjectId}`);
+      const data = await response.json().catch(() => ({}));
+      for (const lecture of data.lectures || []) {
+        previousLectures.set(lecture.file_path, lecture);
+        previousLectures.set(cleanFileTitle(lecture.title).toLowerCase(), lecture);
+      }
+    }
+
+    if (replaceExisting) {
+      onProgress?.({ done: 0, total: entries.length || 1, label: "Clearing old folder index", current: "" });
+      await apiFetch(`/api/courses/${subjectId}/lectures`, { method: "DELETE" });
+      await apiFetch(`/api/courses/${subjectId}/materials?category=material`, { method: "DELETE" });
+    }
+
+    let videoIndex = 0;
+    let materialIndex = 0;
+    const failures = [];
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      onProgress?.({
+        done: i,
+        total: entries.length,
+        label: entry.type === "video" ? "Reading video duration and thumbnail" : "Importing material",
+        current: entry.title,
+      });
+      if (entry.type === "video") {
+        const metadata = await getVideoMetadata(entry.fileHandle, entry.title);
+        const response = await apiFetch(`/api/courses/${subjectId}/lectures`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: entry.title,
+            file_path: entry.file_path,
+            duration: metadata.duration,
+            thumbnail: metadata.thumbnail,
+            order_index: videoIndex++,
+          }),
+        });
+        if (!response.ok) {
+          failures.push(entry.file_path);
+          videoIndex--;
+        } else if (replaceExisting) {
+          const data = await response.json().catch(() => ({}));
+          const previous = previousLectures.get(entry.file_path) || previousLectures.get(entry.title.toLowerCase());
+          if (previous && data.lecture?.id) {
+            await apiFetch(`/api/courses/${subjectId}/lectures/${data.lecture.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                last_position: previous.last_position || 0,
+                is_completed: previous.is_completed || 0,
+                watch_count: previous.watch_count || 0,
+                total_watch_time: previous.total_watch_time || 0,
+              }),
+            }).catch(() => {});
+          }
+        }
+      } else {
+        const response = await apiFetch(`/api/courses/${subjectId}/materials`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: entry.title,
+            file_path: entry.file_path,
+            category: "material",
+            type: "document",
+            order_index: materialIndex++,
+          }),
+        });
+        if (!response.ok) {
+          failures.push(entry.file_path);
+          materialIndex--;
+        }
+      }
+      onProgress?.({
+        done: i + 1,
+        total: entries.length,
+        label: "Importing folder",
+        current: entry.title,
+      });
+    }
+    if (failures.length) {
+      throw new Error(`Could not import ${failures.length} files. First failed: ${failures[0]}`);
+    }
+    return { lectures: videoIndex, materials: materialIndex };
+  };
+
+  const createSubject = async () => {
+    if (!newSubject.name.trim() || !newSubject.teacher_name.trim() || creatingSubject) return;
+    setCreatingSubject(true);
+    setImportProgress({ done: 0, total: selectedFolderCount || 1, label: "Creating course", current: "" });
+    try {
+      const res = await apiFetch("/api/courses", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newSubject),
       });
-      toast.success("Course added!");
-      setNewSubject({ name: "", description: "", color: CHART_COLORS[0], cover_image: null });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to create course");
+      if (selectedFolderHandle && data.subject?.id) {
+        const imported = await importBrowserFolder(data.subject.id, selectedFolderHandle, setImportProgress);
+        toast.success(`Course added from ${selectedFolderHandle.name}: ${imported.lectures} lectures, ${imported.materials} materials`);
+      } else {
+        toast.success("Course added!");
+      }
+      setNewSubject({ name: "", teacher_name: "", description: "", color: CHART_COLORS[0], cover_image: null });
+      setSelectedFolderHandle(null);
+      setSelectedFolderCount(0);
+      setSelectedFolderVideos(0);
+      setSelectedFolderMaterials(0);
       setShowAdd(false);
-      loadSubjects();
-    } catch { toast.error("Failed to add course"); }
+      await loadSubjects();
+    } catch (e) { toast.error(e.message || "Failed to add course"); }
+    finally {
+      setCreatingSubject(false);
+      setImportProgress(null);
+    }
   };
 
   const deleteSubject = async (id) => {
@@ -316,13 +505,14 @@ export default function CoursesPage() {
   };
 
   const saveEditedSubject = async () => {
-    if (!editingSubject.name.trim()) return;
+    if (!editingSubject.name.trim() || !editingSubject.teacher_name?.trim()) return;
     try {
       await apiFetch(`/api/courses/${editingSubject.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: editingSubject.name,
+          teacher_name: editingSubject.teacher_name,
           description: editingSubject.description,
           color: editingSubject.color,
           cover_image: editingSubject.cover_image,
@@ -394,7 +584,7 @@ export default function CoursesPage() {
           <p className="text-secondary mt-1">{subjects.length} subjects · manage your learning materials</p>
         </div>
         <button
-          onClick={() => setShowAdd(v => !v)}
+          onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors glow-accent"
         >
           <Plus className="w-4 h-4" /> Add Course
@@ -435,18 +625,54 @@ export default function CoursesPage() {
         </div>
       </div>
 
-      {/* Add course panel */}
+      {/* Add course modal */}
       <AnimatePresence>
         {showAdd && (
-          <motion.div
-            initial={{ opacity: 0, y: -10, height: 0 }}
-            animate={{ opacity: 1, y: 0, height: "auto" }}
-            exit={{ opacity: 0, y: -10, height: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden mb-6"
-          >
-            <div className="card-surface p-5 border-indigo-500/20">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.18 }}
+              className="card-surface p-5 border-indigo-500/20 w-full max-w-3xl max-h-[88vh] overflow-y-auto shadow-2xl relative"
+            >
+              <button
+                onClick={() => {
+                  if (creatingSubject) return;
+                  setShowAdd(false);
+                  setSelectedFolderHandle(null);
+                  setSelectedFolderCount(0);
+                  setSelectedFolderVideos(0);
+                  setSelectedFolderMaterials(0);
+                }}
+                disabled={creatingSubject}
+                className="absolute top-4 right-4 text-muted hover:text-primary transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
               <h3 className="font-display font-semibold text-primary mb-4">New Course</h3>
+              <div className="mb-4 rounded-xl border border-default bg-elevated p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-primary">Create from folder</p>
+                  <p className="text-xs text-muted mt-0.5">
+                    Browse a folder to auto-fill the course name and import its files for this session.
+                  </p>
+                  {selectedFolderHandle && (
+                    <p className="text-xs text-emerald-400 mt-2">
+                      Selected: {selectedFolderHandle.name} · {selectedFolderVideos} videos · {selectedFolderMaterials} materials
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={browseCourseFolder}
+                  disabled={creatingSubject}
+                  className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-default bg-surface hover:bg-overlay text-secondary hover:text-primary text-sm transition-colors"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                  Browse Folder
+                </button>
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs text-muted mb-1.5">Subject Name *</label>
@@ -460,6 +686,16 @@ export default function CoursesPage() {
                   />
                 </div>
                 <div>
+                  <label className="block text-xs text-muted mb-1.5">Teacher Name *</label>
+                  <input
+                    value={newSubject.teacher_name}
+                    onChange={e => setNewSubject(v => ({ ...v, teacher_name: e.target.value }))}
+                    placeholder="e.g. VD Sir"
+                    className="input-base"
+                    onKeyDown={e => e.key === "Enter" && createSubject()}
+                  />
+                </div>
+                <div>
                   <label className="block text-xs text-muted mb-1.5">Description</label>
                   <input
                     value={newSubject.description}
@@ -468,7 +704,6 @@ export default function CoursesPage() {
                     className="input-base"
                   />
                 </div>
-
                 {/* Cover image */}
                 <ImagePickerButton
                   value={newSubject.cover_image}
@@ -507,10 +742,36 @@ export default function CoursesPage() {
                       }
                     </div>
                     <div className="px-3 py-2">
-                      <p className="text-xs font-semibold text-primary truncate">{newSubject.name}</p>
-                      <div className="w-full h-1 rounded-full bg-white/8 mt-1.5">
+                  <p className="text-xs font-semibold text-primary truncate">{newSubject.name}</p>
+                  {newSubject.teacher_name && (
+                    <p className="text-[10px] text-indigo-400 truncate">{newSubject.teacher_name}</p>
+                  )}
+                  <div className="w-full h-1 rounded-full bg-white/8 mt-1.5">
                         <div className="h-full w-0 rounded-full" style={{ background: newSubject.color }} />
                       </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {creatingSubject && importProgress && (
+                <div className="mt-4 rounded-xl border border-indigo-500/20 bg-indigo-500/8 p-4">
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="w-5 h-5 text-indigo-400 animate-spin flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-3 text-xs text-secondary mb-2">
+                        <span className="truncate">{importProgress.label}</span>
+                        <span className="font-mono text-indigo-400">{importProgress.done} / {importProgress.total}</span>
+                      </div>
+                      <div className="progress-bar">
+                        <div
+                          className="progress-fill"
+                          style={{ width: `${Math.round((importProgress.done / Math.max(importProgress.total, 1)) * 100)}%` }}
+                        />
+                      </div>
+                      {importProgress.current && (
+                        <p className="text-[11px] text-muted mt-2 truncate">{importProgress.current}</p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -519,19 +780,29 @@ export default function CoursesPage() {
               <div className="flex gap-3 mt-4">
                 <button
                   onClick={createSubject}
-                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
+                  disabled={creatingSubject || !newSubject.name.trim() || !newSubject.teacher_name.trim()}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors disabled:opacity-60"
                 >
-                  Create Course
+                  {creatingSubject && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {creatingSubject ? "Importing..." : "Create Course"}
                 </button>
                 <button
-                  onClick={() => setShowAdd(false)}
+                  onClick={() => {
+                    if (creatingSubject) return;
+                    setShowAdd(false);
+                    setSelectedFolderHandle(null);
+                    setSelectedFolderCount(0);
+                    setSelectedFolderVideos(0);
+                    setSelectedFolderMaterials(0);
+                  }}
+                  disabled={creatingSubject}
                   className="px-4 py-2 rounded-lg border border-default text-secondary hover:text-primary text-sm transition-colors"
                 >
                   Cancel
                 </button>
               </div>
-            </div>
-          </motion.div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
@@ -572,6 +843,14 @@ export default function CoursesPage() {
                   />
                 </div>
                 <div>
+                  <label className="block text-xs text-muted mb-1.5">Teacher Name *</label>
+                  <input
+                    value={editingSubject.teacher_name || ""}
+                    onChange={e => setEditingSubject(v => ({ ...v, teacher_name: e.target.value }))}
+                    className="input-base"
+                  />
+                </div>
+                <div>
                   <label className="block text-xs text-muted mb-1.5">Accent Color</label>
                   <div className="flex gap-2 flex-wrap">
                     {CHART_COLORS.map(c => (
@@ -594,7 +873,8 @@ export default function CoursesPage() {
                 <div className="flex gap-3 mt-6 pt-4 border-t border-default">
                   <button
                     onClick={saveEditedSubject}
-                    className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
+                    disabled={!editingSubject.name.trim() || !editingSubject.teacher_name?.trim()}
+                    className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors disabled:opacity-60"
                   >
                     Save Changes
                   </button>
